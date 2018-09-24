@@ -1,0 +1,2144 @@
+---
+title: "On the development of predictive models for use in Emergency Medical Dispatch centers"
+author: "Douglas Spangler"
+date: "September 23, 2018"
+output:
+  pdf_document: default
+  html_document: default
+urlcolor: blue
+abstract: "Triage tools based on Machine learning offer a promising approach to enhancing the decisional capacity of staff working at Emergency Medical Dispatch centers. There are however many challenges to implementing such systems including the definition of relavant outcomes and patient cohorts, handling issues relating to data quality, and choosing modelling techniques. In a 2 year project funded by the Swedish Agency for Innovation, the Uppsala Ambulance Service aims to develop a machine-learning based tool to augment the current rule-based decision support system. In this analysis, we outline our approach to addressing these challenges, provide a thorough descriptive analysis of the data available for this purpose, and provide a brief report regarding the overall performance of a set of preliminary models based on retrospective data. Overall, our current, non-optimized models have a fair predictive value across a broad range of outcomes including ambulance interventions, patient vital signs, and hospital outcomes."
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      warning = FALSE,
+                      message = FALSE,
+                      fig.width = 10,
+                      fig.height = 7,
+                      fig.align = "center",
+                      dpi = 300)
+
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(knitr)
+library(kableExtra)
+library(lubridate)
+library(reshape2)
+library(PRROC)
+library(xgboost)
+library(data.table)
+library(rms)
+library(effects)
+
+# Set random seed for reproducibility
+
+set.seed(42)
+
+# Set common ggplot theme options
+
+stdtheme <- theme(text = element_text(size = 16))
+
+# Some helpful functions
+
+formatpct <- function(x,dec = 1) round(x*100,dec)
+
+splitpipe <- function(x,n){
+  out <- unlist(strsplit(x, "\\|"))[n]
+}
+
+tabletranspose <- function(data){
+  x <- t(data)
+  colnames(x) <- x[1,]
+  x <- x[-1,]
+  x <- as.data.frame(x)
+  return(x)
+}
+
+binomse <- function(x){
+  n <- length(x[!is.na(x)])
+  est <- mean(x, na.rm = T)
+  var <- (est*(1-est))/n
+  se <- sqrt(var)
+  return(se)
+}
+
+getmode <- function(v) {
+   uniqv <- unique(v)
+   uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+dxy2auc <- function(dxy){
+ 0.5 * (dxy + 1)
+}
+
+plotlog <- function(log){
+  log %>%
+  gather(key = "attrib",value = "value",
+         train_auc_mean,test_auc_mean ) %>%
+  mutate(std = ifelse(attrib == "train_auc_mean",
+                       train_auc_std,
+                       test_auc_std)) %>%
+  select(-train_auc_std,-test_auc_std) %>%
+ggplot(aes(x=iter,
+           y=value,
+           ymin = value-std,
+           ymax = value+std,
+           color = attrib)) + 
+  geom_pointrange(size = 0.2) +
+  coord_cartesian(ylim = c(0.6,(max(log$train_auc_mean)+0.01))) +
+    labs(title = "Gradient boosting training log",
+         x = "Iteration",
+         y = "AUC")
+}
+
+# Generate an empty dataframe to contain model summaries
+
+empty_modsum <- function(){
+  
+  out <- data.frame(dat = character(1),
+             lab = character(1),
+             method = character(1),
+             ts = character(1),
+             max_train_auc = numeric(1),
+             max_train_auc_std = numeric(1),
+             max_test_auc = numeric(1),
+             max_test_auc_std = numeric(1),
+             max_train_aucpr = numeric(1),
+             max_train_aucpr_std = numeric(1),
+             max_test_aucpr = numeric(1),
+             max_test_aucpr_std = numeric(1),
+             iter = numeric(1),
+             note = character(1),
+             stringsAsFactors = F)
+  
+  # Lists don't like being defined in a call to data.frame
+  out$preds <- list(0)
+  
+  return(out)
+  
+}
+
+# function for looping through a set of predictor/outcome pairs
+
+mbs_modsum <- function(data,             # a dataset containing all subsets
+                       obs,              # row indexes for current subset
+                       cols,             # list of column indexes of predictive datasets
+                       outs,             # vector of column indexes of outcome family
+                       methods,          # character vector of methods to be used
+                       note = NA,        # note
+                       preds = F,        # Save predictions?
+                       verbose = F,      # Print output?
+                       booster = "dart", # Set default values for xgboost params
+                       rate_drop = 0.2,
+                       nrounds = 200, 
+                       nfold = 10,
+                       early_stopping_rounds = 20,
+                       objective = "binary:logistic"){
+  
+  mod_summary <- empty_modsum()
+  
+  # For each set of predictors...
+  for (i in 1:length(cols)){
+    
+    # Define predictor dataset
+    dat <- data[obs,cols[[i]]]
+    
+    # For each outcome...
+    for (j in 1:length(outs)){
+      
+      # Define vector of labels
+      lab <- data[obs,outs[j]]
+      
+      if ("xgb" %in% methods){
+        
+        print(paste(names(cols[i]),dimnames(data)[[2]][outs[j]],Sys.time()))
+        
+        # Train model
+        xgbmod <- xgb.cv(data = dat, 
+                         label = lab, 
+                         booster = booster,
+                         rate_drop = rate_drop,
+                         nrounds = nrounds, 
+                         early_stopping_rounds = early_stopping_rounds,
+                         prediction = preds,
+                         nfold = nfold,
+                         verbose = verbose,
+                         eval_metric = ("auc"),
+                         eval_metric = ("aucpr"),
+                         objective = objective)
+        
+        # Save model summary info to a dataframe
+         outp <- data.frame(dat = names(cols[i]),
+                   lab = dimnames(data)[[2]][outs[j]],
+                   method = "xgb",
+                   ts = as.character(Sys.time()),
+                   max_train_auc = as.numeric(xgbmod$evaluation_log[xgbmod$best_iteration,2]),
+                   max_train_auc_std = as.numeric(xgbmod$evaluation_log[xgbmod$best_iteration,3]),
+                   max_test_auc = as.numeric(xgbmod$evaluation_log[xgbmod$best_iteration,6]),
+                   max_test_auc_std = as.numeric(xgbmod$evaluation_log[xgbmod$best_iteration,7]),
+                   max_train_aucpr = as.numeric(xgbmod$evaluation_log[xgbmod$best_iteration,4]),
+                   max_train_aucpr_std = as.numeric(xgbmod$evaluation_log[xgbmod$best_iteration,5]),
+                   max_test_aucpr = as.numeric(xgbmod$evaluation_log[xgbmod$best_iteration,8]),
+                   max_test_aucpr_std = as.numeric(xgbmod$evaluation_log[xgbmod$best_iteration,9]),
+                   iter = as.numeric(xgbmod$evaluation_log[xgbmod$best_iteration,1]),
+                   note = note,
+                   stringsAsFactors = F)
+         
+         print(paste("auc",as.numeric(xgbmod$evaluation_log[xgbmod$best_iteration,6]),
+                     "aucpr",as.numeric(xgbmod$evaluation_log[xgbmod$best_iteration,8]),
+                     "iter",as.numeric(xgbmod$evaluation_log[xgbmod$best_iteration,1])))
+         
+         # Save out-of-sample predictions to a list maybe
+         if(preds == T){
+           
+           outp$preds <- list(xgbmod$pred)
+           
+         }else{
+           
+           outp$preds <- list(0)
+         }
+         
+        # Bind new predictions to output dataframe
+        mod_summary <- rbind(mod_summary, outp)
+        
+        # Discard the model and clear up some memory
+        remove(xgbmod)
+        gc()
+
+      }
+      
+      if("auc" %in% methods){
+      
+       # Make sure we have only a single predictor
+       if(class(dat) != "numeric"){
+          
+          print("Need 1 predictor for AUROC")
+          
+        }else{
+          t <- data.frame(dat = dat,
+                          lab = lab) %>%
+            filter(complete.cases(.))
+          
+          # Calculate AUC and save to output dataframe
+          tpr <- PRROC::pr.curve(t[t[2] == 1,1], 
+                                 t[t[2] == 0,1])
+          troc <- PRROC::roc.curve(t[t[2] == 1,1], 
+                                   t[t[2] == 0,1])
+          
+          outp <- data.frame(dat = names(cols[i]),
+                     lab = dimnames(data)[[2]][outs[j]],
+                     method = "auc",
+                     ts = as.character(Sys.time()),
+                     max_train_auc = NA,
+                     max_train_auc_std = NA,
+                     max_test_auc = troc$auc,
+                     max_test_auc_std = NA,
+                     max_train_aucpr = NA,
+                     max_train_aucpr_std = NA,
+                     max_test_aucpr = tpr$auc.integral,
+                     max_test_aucpr_std = NA,
+                     iter = NA,
+                     note = note,
+                     stringsAsFactors = F)
+
+            outp$preds <- list(0)
+          
+          mod_summary <- rbind(mod_summary, 
+                               outp)
+        }
+      }
+    }
+  }
+  
+  return(mod_summary)
+}
+
+#Extract predictions from model summary table
+
+extract_preds <- function(x){
+  
+  out <- matrix(nrow = length(x$preds[[1]]),
+                ncol = nrow(x))
+  
+  dimnames(out)[[2]] <- x$lab
+  
+  for(i in 1:nrow(x)){
+    out[,i] <- unlist(x$preds[[i]])
+  }
+  return(out)
+}
+
+# make a pallete of olors corresponding to dispatch priorities
+poutpal <- c("#FF0000","#FFA600","#FFFF00","#00FF00","#0000FF","#FF00FF")
+
+# poutmap <- as.factor(c("4" = "1A","3" = "1B","2" ="2A","1" = "2B","0" = "Referral","NA" = "Unused"))
+poutmap <- c("Unused","Referral","2B","2A","1B","1A")
+#poutmap <- c("1A" = 4,"1B" = 3,"2A" = 2,"2B" = 1,"Referral" = 0,"Unused" = NA)
+
+# Define out-of-regon destinations
+
+oordest <- c("Gävle Sjukhus",
+             "Västerås Sjukhus",
+             "Karolinska Sjukhus",
+             "Örebro Sjukhus", 
+             "Stockholm", 
+             "Eskilstuna Sjukhus",
+             "Avesta Sjukhus", 
+             "Köping Sjukhus", 
+             "Lindesberg Sjukhus", 
+             "Falun Sjukhus", 
+             "Falu Lasarett")
+
+# Define pretty variable names
+
+prettyname <- function(x,vn = varnames,mod = F){
+  
+  if(mod){
+    vn <- vn[,-2]
+  }else{
+    vn <- vn[,-3]
+  }
+  
+  if(length(x) == 1){
+    
+    o <- vn[which(vn[,2] == x),1]
+    
+  }else{
+    
+    o <- sapply(x, function(y){
+      vn[which(vn[,2] == y),1]
+      
+    })
+  }
+  
+  return(as.character(unname(o)))
+  
+}
+
+varnames <- c(
+ "caseid" = "Case ID",
+ "null_age" = "Patient Age", 
+ "null_female" = "Female gender", 
+ "null_pcontacts" = "Number of prior contacts", 
+ "null_lastcontact" = "Days since last contact", 
+ "null_wkday" = "Weekday", 
+ "null_time_sin" = "Contact Time (sin transformed)",
+ "null_time_cos" = "Contact Time (cos transformed)",
+ "null_month_sin" = "Contact Month (sin transformed)",
+ "null_month_cos" = "Contact Month (cos transformed)",
+ "amb_ambtxp" = "Ambulance transport", 
+ "amb_meds" = "Medications administered", 
+ "amb_pin" = "Lights & sirens to hospital", 
+ "amb_o2" = "Supplemental oxygen", 
+ "amb_ekgtx" = "EKG transmitted to hospital", 
+ "amb_gauze" = "Bleeding control/bandages applied", 
+ "amb_iv" = "IV placed", 
+ "amb_immob" = "Spinal/longbone immobilization", 
+ "amb_cpr" = "CPR administered by crew", 
+ "amb_crit" = "Patient documented as critical", 
+ "amb_alert" = "Pre-arrival notification given", 
+ "amb_any" = "Any intervention provided", 
+ "v_br" = "Breathing rate", 
+ "v_spo2" = "Capillary oxygen saturation", 
+ "v_pr" = "Pulse rate", 
+ "v_bp" = "Systolic blood pressure", 
+ "v_temp" = "Temperature", 
+ "v_avpu" = "AVPU", 
+ "v_gcs" = "Glasgow Coma Scale",
+ "news" = "NEWS score", 
+ "news_hi" = "NEWS score > 7", 
+ "news_lo" = "NEWS score > 4",
+ "hosp_ed" = "Patient arrived at ED", 
+ "hosp_admit" = "Patient admitted to ward", 
+ "hosp_icu" = "Patient treated at ICU", 
+ "hosp_radio" = "CT scan performed", 
+ "hosp_op" = "Surgical intervention performed", 
+ "hosp_dead3day" = "Patient 3-day mortality", 
+ "cat_Allergisk reaktion" = "Allergic Reaction", 
+ "cat_Allmän barn" = "General Child", 
+ "cat_Allmän vuxen" = "General Adult", 
+ "cat_Allmän åldring" = "General Elderly", 
+ "cat_Andningsbesvär" = "Difficulty Breathing", 
+ "cat_Annat" = "Other", 
+ "cat_Arm-, bensymtom (ej trauma)" = "Arm/leg sympoms (non-traumatic)", 
+ "cat_Blod i urin" = "Blood in urine", 
+ "cat_Blodig upphostning" = "Blood in cough", 
+ "cat_Blodsocker lågt" = "Low Blood sugar", 
+ "cat_Brand" = "Fire", 
+ "cat_Brännskada" = "Burn", 
+ "cat_Bröstsmärta" = "Chest pain", 
+ "cat_Buk-, flanksmärta" = "Abdominal/flank pain", 
+ "cat_CBRN" = "CBRN", 
+ "cat_Diarré" = "Diarrhea", 
+ "cat_Drunkningstillbud" = "Drowning", 
+ "cat_Dykeriolycka" = "Diving accident", 
+ "cat_Elektrisk skada" = "Electical injury", 
+ "cat_Feber" = "Fever", 
+ "cat_Flygolycka" = "Aircraft accident", 
+ "cat_Förlossning" = "Childbirth", 
+ "cat_Förvirring" = "Confision", 
+ "cat_Graviditet" = "Pregnancy", 
+ "cat_Hallucination" = "Hallucination", 
+ "cat_Halsont" = "Sore throat", 
+ "cat_Hjärtstopp" = "Cardiac arrest", 
+ "cat_Huvudvärk" = "Headache", 
+ "cat_Hypotermi" = "Hypothermia", 
+ "cat_ICD" = "ICD", 
+ "cat_Illamående" = "Nausea", 
+ "cat_Infektion" = "Infection", 
+ "cat_Intox/förgiftning" = "Intoxication", 
+ "cat_Kramper" = "Convulsions", 
+ "cat_Kräkning" = "Vomiting", 
+ "cat_Köldskada" = "Cold injury", 
+ "cat_Luftvägsbesvär" = "Airway problems", 
+ "cat_Mag-, tarmblödning" = "Stomach/Intestinal bleeding", 
+ "cat_Näs-, svalgblödning" = "Nose/Throat bleeding", 
+ "cat_Ormbett" = "Snake bite", 
+ "cat_Pacemaker" = "Pacemaker", 
+ "cat_Planerad" = "Planned",
+ "cat_Psykiska besvär" = "Psychiatic problems", 
+ "cat_Ryggsmärta" = "Back pain", 
+ "cat_Rytmrubbning" = "Cardiac arrythmia", 
+ "cat_Rökexponering" = "Smoke exposure", 
+ "cat_Saknas" = "MBS Unused", 
+ "cat_Sensoriskt-, motoriskt bortfall" = "Senosory/motor deficiency", 
+ "cat_Sjöolycka" = "Maritime accident", 
+ "cat_Stroke" = "Stroke", 
+ "cat_Svimning" = "Fainting", 
+ "cat_Sårskada" = "Minor truama", 
+ "cat_Sänkt vakenhet" = "Reduced Consciousness", 
+ "cat_Trafikolycka" = "Traffic accident", 
+ "cat_Trauma" = "Trauma", 
+ "cat_Urinkateterstopp" = "Urinary catheter blockage", 
+ "cat_Urinstämma" = "Urinary retention", 
+ "cat_Urogenitala besvär" = "Urogenital problems", 
+ "cat_Vaginal blödning" = "Vaginal bleeding", 
+ "cat_Våld-hot-suicidhot" = "Violence/threats/Suicide", 
+ "cat_Yrsel" = "Dizziness", 
+ "cat_Ögon" = "Eye problems", 
+ "freetext" = "", 
+ "operator" = "", 
+ "starttime" = "", 
+ "pnrvalid" = "", 
+ "pnrage" = "", 
+ "pnrfemale" = "", 
+ "pout" = "Dispatched Priority", 
+ "closereason" = "", 
+ "calltype" = "", 
+ "ambj" = "", 
+ "export" = "", 
+ "cosmicj" = "", 
+ "catpn" = "", 
+ "recpoutncat" = "", 
+ "recpoutalln" = "Reccomended priority (numeric)", 
+ "recpoutall" = "Reccomended priority", 
+ "cr" = "Care need", 
+ "crdet" = "Disposition", 
+ "crdest" = "Destination", 
+ "crcorr" = "Care need (corrected)", 
+ "ambtxpcorr" = "", 
+ "n" = "", 
+ "minmidnight" = "", 
+ "recontact" = "", 
+ "npin" = "", 
+ "pnrsinglevalid" = "", 
+ "month" = "", 
+ "wkday" = "",
+ "eddiag" = "", 
+ "carehrs" = "", 
+ "daystodeath" = "", 
+ "hour" = "", 
+ "dead" = "", 
+ "daystodeathpos" = "", 
+ "daystodeathneg" = "", 
+ "recpout" = "Reccomended priority", 
+ "recpoutn" = "Reccomended priority", 
+ "poutn" = "Dispatched priority",
+ "ambptobs" = "Ambulance Interventions",
+ "vobs" = "Vital Signs",
+ "hospptobs" = "Hospital Outcomes",
+ "txpobs" = "Transported Patients",
+ "null" = "Characteristics only", 
+ "cat" = "Call Types", 
+ "mbs" = "MBS", 
+ "alldisp" = "All Dispatch data", 
+ "allamb" = "Ambulance data")
+
+varnames <- data.frame(pretty = varnames,
+                       orig = names(varnames),
+                       mod = make.names(names(varnames)),
+                       stringsAsFactors = F)
+
+# dataset without follow-up ambulance contacts
+load("180910_fulldata.rda")
+
+# dataset with follow-up ambulance contacts
+load("180920_alldata.rda")
+
+# Clear non-medical calls and calls prior to August 2016
+alldata <- alldata %>%
+  filter(crcorr %in% c("Ambulance need", "No Ambulance care need")) %>%
+  mutate(poutref = ifelse(pout == "Referral",
+                       ifelse(crdet %in% c("Hänvisning till annat transportsätt",
+                                           "Hänvisning till sjukresa"),
+                         "Alt. txp",
+                         "Alt. care"),
+                       as.character(pout))) %>%
+  mutate(poutref = factor(poutref,levels = c("1A", "1B", "2A", "2B", "Alt. txp", "Alt. care")))
+
+```
+
+# Introduction
+
+It is the stated goal of the Uppsala Ambulance Service (UAS) to provide the right resource, to the right patient at the right time. Given an increasingly frail elderly population often with multiple comorbidities and underlying care needs, this can be a difficult goal to achieve without sacrificing patient safety. A high degree of sensitivity is demanded of the ambulance service for emergent conditions necessitating an ambulance response, but given a resource-constrained healthcare system, the need to differentiate between patients with various levels of need is a fact of life.  
+
+The ability of an en Emergency Medical Dispatch (EMD) system to differentiate between acute conditions requiring an ambulance, and conditions that are more appropriately treated in other contexts is dependent on a large number of factors. These include a well educated and trained staff, the provision of feedback and robust clinical guidelines, a healthy workplace culture, well-established links with other healthcare providers, and an effective Clinical Decision Support System (CDSS). While this document with deal exclusively with the final point, it should be recognized that the development of CDSS in the absence of efforts to improve other preconditions for delivering high-quality medical decision-making in the practice of EMD are likely to be fruitless.  
+
+CDSS have traditionally been based on explicit rules determined a priori based on clinical expertise. Such "expert systems" have the advantage of being relatively simple, and have been found to be reasonably effective in identifying specific high-acuity conditions in the context of EMD. This methodology has been extended to to the identification of low-acuity patients in EMD, and thus far these efforts have had some success. [Shah et al. (2005)](https://doi.org/10.1080/10903120590891651) for instance found that a set of "low priority" dispatch codes could be identified which contained at least 90% calls which were not provided with ALS-level care, while [Hinchey et al. (2007)](https://doi.org/10.1080/10903120601021366) found a rate of less than 1%. [Studnek et al. (2012)](https://doi.org/10.3109/10903127.2011.640415) found that among callers triaged to a low acuity dispatch code, 70-75% of patients could be discharged from the emergency department. An increasingly popular approach to clinical decision support is the use of predictive models in various forms - For instance through the use of random forest models to predict hospital outcomes based on data collected at the Emergency Department, and artificial neural networks to analyze images to detect skin cancer.  
+
+The problem of developing predictive models for use in EMD is complex and multifaceted. Many type of patients with a wide variety of conditions are handled in the prehospital care system, and given the context in which it is collected, documentation of the care provided can be poor. Numerous decisions must be made during the analytical process in terms of selecting appropriate inclusion and exclusion criteria, developing a robust set of outcome measures, training models to predict these outcomes, and delivering their outputs to clinical staff in a manner which augments rather than replaces their decisional capacity.  
+
+This paper aims to provide insight into how these problems are being addressed at the UAS in a two-year project funded by the Swedish Agency for Innovation (Vinnova). Based on the findings of the project thus far, and the analysis of two years of data from the Uppsala region (2016-2017), this document will:
+
+1) Describe the assumptions and general approach taken in developing a CDSS based on predictive modelling for use by qualified clinical staff at the EMD center.  
+
+2) Provide a descriptive analysis of the EMD data available for use in predictive modelling at out agency, as well as the outcome data available from ambulance records and the regional Electronic Medical Record (EMR) system, and note some interesting findings from exploratory data analysis.  
+
+3) Assess the predictive value of preliminary models for the outcome measures developed in this project, and compare these to existing triage methods.  
+
+4) Discuss the findings and how these models may be used as the basis for a clinically useful tool by nurses operating at the EMD center.  
+
+While we hope that these results and the source code used to generate them will be useful to other researchers and clinicians, to be considered of research quality, the results of our predictive modelling efforts in particular must be validated against an unobserved dataset. While we report model performance based on cross-validated test data in this report, in a future publication we plan to validate our final models against unexamined data collected in 2018.
+
+# 1) Approach  
+
+Our approach to developing models for prehospital care is based on the consideration of a number of factors which must be weighted against each other. What data do we have access to, and is it reliably documented? For what patient cohorts are the models based on these data valid? What specific decisions can we help our clinicians make when triaging a patient? Over the course of the project thus far we have found that there is a preference among EMD nurses towards simplicity in how the CDSS is presented, and towards a focus on short-term patient outcomes over longer term outcomes. Simultaneously, simple models based on single outcome measures may be criticized for being insufficiently comprehensive (e.g., a prediction of the likelihood of transport to a hospital might mischaracterize patients requiring treatment in the home but not transport).  
+
+As such, we've chosen to pursue the development of 3 outcome "families" which represent respectively the prehospital interventions provided to a patient, the patients prehospital vital signs (as scored on the National Early Warning System (NEWS) scale), and the patients in-hospital outcomes. Each of these families has strengths and weaknesses:  
+
+Prehospital interventions may include for instance transport with lights and sirens, the administration of medications, spinal immobilization, insertion of IV catheters, oxygen administration, etc. It is the aim of this family to include as comprehensive a set of interventions as possible, allowing us to differentiate between patients in need of ambulance care from those who could reasonably be transported via alternate means to an ED or other healthcare facility. This set of measures includes those outcomes which are of most interest to dispatchers based on a questionnaire distributed to EMD nurses in Uppsala and Västmanland, but also come with weaknesses. These measures can be said be somewhat subjective - The criteria for transporting a patient with lights and sirens, for instance, are fairly vague, and different crews are likely to make different decisions in the same situation. There is also an overhanging risk that biases on the part of the dispatcher may influence outcomes, particularly if patients who do not receive an ambulance are included and considered to be negative for these measures. These measures could be thought of in the context of the Donebedian quality framework as measures of care processes.
+
+Patient vital signs per NEWS have the benefit of being a clinically validated and objective measure of patient acuity. However, the interpretation of what a high or low NEWS score means in the context of an individual patient is difficult to postulate beforehand in the context of EMD. Does a high NEWS value indicate the need to an ambulance response, or does it indicate a response by a mobile geriatric care doctor? Furthermore, NEWS data are only captured for patients receiving an ambulance response, and therefore these models risk misrepresenting patients who commonly do not receive an ambulance response.
+
+Hospital outcomes include for instance admission to an in-patient care ward, treatment in an intensive care unit, hospital length of stay, provision of surgical interventions or radiological diagnostic procedures, etc. While these measures are likely to be less subject to dispatcher bias, hospital data are only available for patients for whom a valid Personal Identification Number (PIN) is captured, and as such these measures risk misrepresenting patient populations for whom a valid PIN is not commonly documented. Furthermore, given the complexity of hospital medical care and the relatively limited structured data available, this measure family is not likely to represent a comprehensive picture of the care provided to a patient at the hospital, and can at best provide a limited set of indicators of care intensity. There are also risks in terms of loss to followup as we only capture data from the regional EMR system (though we can exclude patients calling from municipalities close to neighboring hospitals), and we only capture healthcare contacts up to 72 hours following the call to the EMD center.
+
+The goal then is to present three risk models representing each of these families to clinicians at the EMD center. Many of the issues presented (e.g., which patients each model can reliably represent) cannot be resolved statistically. Only by training staff in the strengths and weaknesses of each model and their appropriate use, presenting information which allows clinicians to interpret the model predictions, and continuously monitoring system performance can ensure their appropriate use. 
+
+Just as outcomes for our patients are multifaceted, so too are the data available to predict them from. The CDSS used at the Uppsala, Västmanland, and Sörmland EMD centers in central Sweden, is of the traditional rule-based type. Known in Swedish as _Medicinska Beslutsstödet_ (MBS), it consists of 60 distinct call types, Within which clinicians are able to document answers to a structured set of questions distinct to each call type (though some call types share questions, resulting in 36 unique sets of structured data). It looks like this:
+
+```{r, out.width = "470px", echo=F}
+include_graphics('./MBS_dump.png')
+```
+
+The MBS is structured based on the AMLS triage concept, and consists of several question groups. Three *Initial* questions at the top left of the screen are designed to identify and detect cardiac arrest, and result in immediate ambulance dispatch.  *ABCDE* questions are designed to rule out acute conditions based on the patients signs and symptoms. This set of questions always follows a yes/no format and often tied to the rule-based triage system, resulting to an adjustment to the priority determination as indicated by the colored outline of the answer box. *Observera* questions are intended to capture additional items important to the triage determination, but which are not tied explicitly to the rule-based determination. *OPQRST* questions are designed to capture details of the patients condition, while *AMPLE* questions are designed to capture information related to the patient's medical background. Only some of these questions have answers which lead to a change in call priority, and the *OPQRST* and *AMPLE* sections unfortunately have a poor rate of documentation. Additionally, dispatchers lack the ability to document negative findings for these questions, making these data unsuitable for use in predictive models (Nor do their inclusion in our models seem to yield improvements to their predictive value). We plan on implementing improvements which will (hopefully) address these issues, but for now, only data from the *Initial* and *ABCDE* group will be used in the context of developing predictive models.
+
+Based on the call type and modified by the MBS answers, a recommended priority is generated:
+
+1A - Lights and sirens, high priority  
+1B - Lights and sirens, low priority  
+2A - No Lights and sirens, high priority  
+2A - No Lights and sirens, low priority  
+Referral - No ambulance sent  
+
+Calls at the Uppsala EMD center are answered and triaged exclusively by nurses, and a high degree of latitude is afforded as to whether to adhere to the recommended priority from the MBS. Indeed, while highly encouraged, it is not mandatory to utilize the system, and nurses may also choose to assign a priority based on their discretion without using the MBS.
+
+In addition to the structured data documented in the MBS, information is available regarding the demographics of the patient (Age, Gender, Prior EMD contacts, call location and time), as well as unstructured text data documented by the dispatcher in a comment field located above the MBS proper. These comments have a median length of ~130 characters, and follow no particular structure. These varying types of data allow for varying approaches to predictive modelling. It is quite feasible to model demographic and structured MBS data using traditional regression-based approaches given the comparatively small number of features. The analysis of text data in this context can be trickier, though certainly possible through the application of regularization and/or dimensionality reduction techniques. 
+
+While a number of methods have been tested on these data, the primary estimation method presented here in section 3 will be based on gradient boosting as implemented in the xgboost R package. In our experience, this method has performed as well or better than comparable regularized regression, Random Forest, and neural network models in terms of overall predictive value (We'll be presenting a formal comparison of these approaches as validated in 2018 data in future publications). While similar in performance, we've found gradient boosting to be more robust in the context of unbalanced outcome data, to handle missing data elegantly, account appropriately for interactions between predictors, and to be relatively straightforward in terms of implementation. We by no means claim to have identified the optimal methods for modelling these data. As such, we limit our interpretation to their relative performance in comparison with other nested sets of predictors, and with benchmarks consisting of the priority recommended by the MBS and of the actual dispatched priority of the call. The analyses presented here were performed using R 3.5.1.
+
+# 2) Descriptive analysis
+
+## Data quality
+
+Data quality problems in prehospital care are common - The situations encountered by EMD nurses are extremely varied, often chaotic, and commonly involve a strong time pressure. Perhaps understandably, missing PINs and incomplete documentation are not uncommon. In the table below, we present some measures of "Missingness" in our data. We only began tracking detailed disposition data in August, 2016, and as such are unfortunately missing this valuable information for calls prior to this time, denoted here as no data:
+
+
+
+```{r missing 1}
+fulldata %>%
+  group_by(crcorr) %>%
+  dplyr::summarize(`Total calls (%)` = paste0(n(),
+                                  " (", formatpct(n()/nrow(fulldata)), ")"),
+            `Valid PIN captured at dispatch (%)` = paste0(sum(as.numeric(pnrvalid)),
+                                                          " (", formatpct(mean(pnrvalid)), ")"),
+            `PIN captured ever (%)` = paste0(sum(export),
+                                             " (", formatpct(mean(export)), ")"),
+            `MBS Used (%)` = paste0(sum(1-cat_Saknas),
+                                             " (", formatpct(1-mean(cat_Saknas)), ")"),
+            `Ambulance journals (%)` = paste0(sum(ambj),
+                                             " (", formatpct(mean(ambj)), ")"),
+            `PINs with hospital record (%)` = 
+              paste0(sum(ifelse(export,cosmicj,NA),na.rm = T),
+            " (", formatpct(mean(ifelse(export,cosmicj,NA),na.rm = T)), ")"),
+            `Transported with hospital record (%)` = 
+              paste0(sum(ifelse(amb_ambtxp & export &
+                                  !(crdest %in% oordest), cosmicj, NA), na.rm = T),
+            " (", formatpct(mean(ifelse(amb_ambtxp & export &
+                                  !(crdest %in% oordest), cosmicj, NA), na.rm = T)), ")")) %>% 
+  tabletranspose() %>%
+  kable(format="latex", booktabs = T) %>%
+  kable_styling(full_width = T)
+  
+```
+
+
+
+We see that missing PINS are highly concentrated among the Non-medical calls. We see that the rate of missingness among patients with a medical complaint but not in need of ambulance care is more satisfactory, though call type documentation rates are still somewhat low! We also want to make sure to capture cases where patients re-contact with the EMD center or other healthcare providers following the call. We chose a follow up period of 72 hours for both EMD center re-contacts and healthcare system contacts. If during this time a patient for whom a valid PIN is captured re-contacts the EMD center, we associate any ambulance interventions from the subsequent contact to the prior contact as well. For health system contacts, the first subsequent contact with the healthcare system and any additional contacts occurring within 4 hours of the initial contact are captured.
+
+Since we only have this detailed disposition data from August 2016 onwards we will limit our descriptive analysis to calls from that time to the end of 2017, and exclude non-medical calls from our analysis. We can also further divide our referrals into two broad categories: Referrals to alternate transport, and referrals to alternate forms of definitive care. Upon implementing these modifications, the distribution of missingness among the dispatched priorities reveals some interesting patterns:
+
+
+
+```{r missing 2}
+
+alldata %>%
+  group_by(poutref) %>%
+  dplyr::summarize(`Total calls (%)` = paste0(n(),
+                                  " (", formatpct(n()/nrow(alldata)), ")"),
+            `Valid PIN captured at dispatch (%)` = paste0(sum(as.numeric(pnrvalid)),
+                                                          " (", formatpct(mean(pnrvalid)), ")"),
+            `PIN captured ever (%)` = paste0(sum(export),
+                                             " (", formatpct(mean(export)), ")"),
+            `MBS Used (%)` = paste0(sum(1-cat_Saknas),
+                                             " (", formatpct(1-mean(cat_Saknas)), ")"),
+            `Ambulance Journals (%)` = paste0(sum(ambj),
+                                             " (", formatpct(mean(ambj)), ")"),
+            `PINs with hospital record (%)` = 
+              paste0(sum(ifelse(export,cosmicj,NA),na.rm = T),
+            " (", formatpct(mean(ifelse(export,cosmicj,NA),na.rm = T)), ")"),
+            `Transported to ED with hospital record (%)` = 
+              paste0(sum(ifelse(amb_ambtxp & export &
+                                  (crdest %in% c("Uppsala Akademiska", "Enköpings Sjukhus")),
+                                cosmicj,NA),na.rm = T),
+            " (", formatpct(mean(ifelse(amb_ambtxp & export &
+                                  (crdest %in% c("Uppsala Akademiska", "Enköpings Sjukhus")),
+                                  cosmicj,NA),na.rm = T)), ")")) %>%
+  tabletranspose() %>%
+  kable(format="latex", booktabs = T) %>%
+  kable_styling(full_width = T)
+
+```
+
+
+
+We see two effects in terms of documentation completeness: Higher acuity calls appear to have lower rates of documentation completeness, as do referred calls, and especially calls referred to alternate care. Upon including re-contacts within 72 hours, we see that around 6% of referred calls among both referrals to alternate transport and alternate care receive an ambulance We see that 75-80% of calls with a captured PIN have an associated health system contact within 72 hours, while patients transported by ambulance to one of the two regional emergency departments (Uppsala University hospital or Enköping hospital). The extent to which this is problematic in terms of predictive modelling is largely determined by the extent to which this loss is randomly distributed across the population.
+
+Beyond simply the ability to link records, we must also consider the completeness of the documentation from our dispatch center, our ambulance journals, and our hospital data. For ambulance data, the correctness of these data can only be checked via manual quality assurance of our data - A process which is ongoing, but has thus far shown satisfactory results, with both ambulance interventions and hospital outcomes ranging from 88% to 100% accuracy compared to a human reviewer (n = 100 so far), with one outlier at 70% due to hospitals not including flat x-rays as a radiological intervention. For our MBS questions and vital signs however, we can investigate data missingness directly by examining the percentage of ABCDE MBS Questions and vital signs that have documented values:
+
+
+
+```{r question missing}
+qs <- alldata[alldata$export == T,] %>%
+  select(starts_with("q_")) %>%
+  mutate_all(funs(ifelse(.==0,NA,ifelse(.==-1,0,1))))
+
+cats <- select(alldata[alldata$export == T,],starts_with("cat_"))
+
+d <- data.frame(cat = character(0),
+                q = character(0),
+                ntot = numeric(0),
+                n = numeric(0),
+                na = numeric(0),
+                naany = numeric(0))
+
+for(i in 1:length(cats)){
+  
+  o <- qs[which(cats[i] == 1),] %>%
+    select(starts_with(paste0("q_",gsub("cat_","",names(cats[i])))),
+           starts_with("q_main"))
+  
+  qcols <- o[1:(ncol(o)-3)]
+  qcols$any <- apply(qcols,1, function(x) all(is.na(x)))
+  
+  o <- cbind(o,any = qcols$any)
+  
+  if(length(o) > 0){
+    
+    ntot <- sapply(o,function(x){length(x)})
+    n <- sapply(o,function(x){sum(!is.na(x))})
+    na <- sapply(o,function(x){mean(is.na(x))})
+    naany <- sapply(o[!o$any,],function(x){mean(is.na(x))})
+    
+    r <- data.frame(cat = names(cats)[i],q = colnames(o),ntot,n,na,naany)
+    
+    d <- rbind(d,r)
+    
+  }
+  
+  
+}
+
+t <- d %>%
+  filter(q != "any") %>%
+  separate(q,c("q","question"),"_") %>%
+  mutate(question = substr(question,1,4)) %>%
+  group_by(cat,question) %>%
+  dplyr::summarize(na = mean(na),
+            n = mean(ntot)) %>%
+  ungroup() %>%
+  mutate(question = ifelse(question == "main",
+                           "Main",
+                           "MBS")) %>%
+  spread(question,na)
+
+tany <- d %>%
+  filter(q != "any") %>%
+  separate(q,c("q","question"),"_") %>%
+  mutate(question = substr(question,1,4)) %>%
+  group_by(cat,question) %>%
+  dplyr::summarize(naany = mean(naany),
+            n = mean(ntot)) %>%
+  ungroup() %>%
+  mutate(question = ifelse(question == "main",
+                           "Maineng",
+                           "MBSeng")) %>%
+  spread(question,naany)
+
+t <- cbind(t,tany[4])
+
+           
+t <- rbind(t,
+           t %>%
+           dplyr::summarize(cat = paste("Total"),
+           ntot = sum(n),
+           Main = sum(Main*n,na.rm = T)/ntot,
+           MBS = sum(MBS*n,na.rm = T)/ntot,
+           MBSeng = sum(MBSeng*n,na.rm = T)/ntot) %>%
+           rename(n = ntot)) %>%
+           arrange(desc(n)) %>%
+           mutate(cat = prettyname(cat),
+                  Main = formatpct(Main),
+                  MBS = formatpct(MBS),
+                  MBSeng = formatpct(MBSeng)) %>%
+  filter(n > 1000) %>%
+  rename(`Call Type` = cat,
+         `Number of calls` = n,
+         `Initial questions missing (%)` = Main,
+         `ABCDE questions missing (%)` = MBS,
+         `ABCDE questions with engagement missing (%)` = MBSeng)
+
+t[1,1] <- "All call types"
+  
+t %>%
+  kable(format="latex", booktabs = T) %>%
+  kable_styling(full_width = T)
+```
+
+
+
+We see that among callers with a documented PIN, answers for the three initial questions are missing in 14% of calls (though the values are lower among specific call types), while answers are missing for the questions included in the MBS in 28% of cases. There are a number of causes of this missingness. There is a tendency for some nurses to simply use the MBS as a guide, without documenting negative findings which do not affect the dispatched priority. The MBS also includes functionality to automatically open additional call types depending on the answers given in the primary call type (e.g., if difficulty breathing is documented for an allergic reaction call, the "difficulty breathing" call type will automatically be added), and these "secondary" call types are not typically well documented. We see that among calls where the dispatcher engaged with the MBS by filling in at least one question, the documentation rate is higher, at about 90%. Note that some call types lack  MBS questions (chest pain for instance), and immediately result in a priority 1 ambulance.
+
+Among calls with an ambulance record, missingness of vital signs is distributed as such:
+
+```{r vital missing 1}
+vs <- alldata[alldata$ambj == 1 &
+                alldata$export == 1,] %>%
+  select(starts_with("v_"),poutref) %>%
+    mutate(nmiss = rowSums(is.na(.)),
+           miss3 = ifelse(nmiss > 2,1,0))
+
+ggplot(aes(x=nmiss),data = vs) + geom_histogram() + facet_wrap(~ poutref,scales = "free") +
+  stdtheme +
+  labs(x = "Number of Vital signs included in NEWS missing")
+
+```
+
+We see a similar pattern regarding documentation, with the highest priority calls having more calls with missing vital signs, and calls referred to alternate transport/care having a large number of ambulance journals with no documented vital signs. As with questions, we can also consider how the documentation of various vitals varies across call types with more than 1000 associated calls:
+
+
+
+```{r vital missing 2,fig.width=12}
+cats <- select(alldata[alldata$ambj == 1 &
+                alldata$export == 1,],starts_with("cat_"))
+
+d <- data.frame(cat = character(0),
+                q = character(0),
+                ntot = numeric(0),
+                n = numeric(0),
+                na = numeric(0),
+                mean = numeric(0),
+                miss3 = numeric(0))
+
+for(i in 1:length(cats)){
+  
+  o <- vs[which(cats[i] == 1),] %>%
+    select(starts_with("v_"),nmiss,miss3)
+  
+  if(length(o) > 0){
+    
+    ntot <- sapply(o,function(x){length(x)})
+    n <- sapply(o,function(x){sum(!is.na(x))})
+    na <- sapply(o,function(x){mean(is.na(x))})
+    mean <- sapply(o,function(x){mean(x,na.rm=T)})
+    
+    r <- data.frame(cat = names(cats)[i],q = colnames(o),ntot,n,na,mean)
+    
+    d <- rbind(d,r)
+    
+  }
+  
+  
+}
+
+vmean <- d %>% dcast(cat + ntot ~ q, value.var = "mean")
+vna <- d %>% dcast(cat + ntot ~ q, value.var = "na")
+
+t <- cbind(vmean[,c(1:2,4)],
+           pctmiss3 = formatpct(vmean[,3]),
+           formatpct(vna[,5:ncol(vna)]))
+
+tot <- t %>%
+  dplyr::summarize_at(vars(3:ncol(.)),funs(weighted.mean(.,ntot))) %>%
+  mutate_all(funs(round(.,1)))
+
+t <- rbind(c(cat = "All call types",ntot = sum(t$ntot),tot), t) %>% 
+  mutate(cat = prettyname(cat),
+         nmiss = round(nmiss,1))
+
+names(t) <- prettyname(names(t))
+names(t)[1:4] <- c("Call type",
+                   "Number of calls",
+                   "Average missing vitals",
+                   "Percent missing > 2 vitals")
+names(t)[5:ncol(t)] <- paste(names(t)[5:ncol(t)],"missing (%)")
+
+t <- arrange(t,desc(`Number of calls`)) %>%
+  filter(`Number of calls` > 1000)
+
+
+t[1,1] <- "All call types"
+  
+t %>%
+  kable(format="latex", booktabs = T) %>%
+  kable_styling(full_width = T)
+```
+
+
+
+We see that the missingness of vital signs varies across call types! Not also the high rate of missingness of AVPU, hence the need to impute values taken from GCS scores. We also see that some specific vitals are missing from certain call types, e.g., high rates of missing temperatures from trauma calls.
+
+## Outcomes
+
+Each of the outcome families necessitates analysis in the context of a distinct patient cohort with specific inclusion criteria. We defined patient cohorts suitable for use with our 3 measure families as follows:
+
+Ambulance interventions - In terms of predicting ambulance interventions, two cohorts are conceivable: Only calls receiving an ambulance, and calls with either a valid documented PIN or an ambulance journal. While descriptive statistics are most useful when described in terms of only ambulance calls, excluding patients referred to other forms of care would limit the validity of the predictive models we develop among the low-acuity patients we are most interested in assessing. While this approach risks inducing bias due to the dispatchers' decisions directly affecting outcomes, we ameliorate this by incorporating data from patient re-contacts.
+
+Vital signs - Patients with an ambulance journal (including re-contacts) missing not more than 2 of the vital signs included in the NEWS score. Among these patients, missing records are likely to be _not missing at random_, and we do not believe that a NEWS score can be reliably imputed for patients which an ambulance does not assess. Records missing 2 or fewer variables are likely to be _missing at random_ were imputed using predictive mean matching as implemented in the mice R package. NEWS is also an instrument validated in adults (there is a separate Pediatric version of NEWS), and as such, we exclude patients under 18 from this measure.
+
+Hospital outcomes - Callers with a documented PIN. For these outcomes we exclude ambulance records with no documented PIN to avoid bias among high-acuity calls. We exclude calls documented as transports but for whom no hospital record exists (likely false negatives due to non-matched records), and patients 
+
+In addition to these cohorts, we investigate one additional group: Patients with a NEWS score who are transported to the ED and have a matching hospital record. Within this cohort, we can develop valid predictive models based on not only data from the EMD center, but also from the Ambulance intervention and Vital Signs measures themselves! These models allow us to investigate how much additional performance might be gained by including ambulance data in our predictions, and potentially act as a useful tool in and of itself, for instance in care planning at the Emergency Department.
+
+
+
+```{r cohorts}
+
+# Define cohorts
+
+# All calls with a PIN documented
+pinobs <- which(alldata$export == 1)
+
+# Only ambulance records (For descriptive analysis)
+ambobs <- which(alldata$ambj == 1)
+
+# Only hospital records (For descriptive analysis)
+hospobs <- which(alldata$cosmicj == 1)
+
+# Records with a valid PIN or ambulance record
+ambptobs <- which(alldata$ambj == 1 |
+                  alldata$pnrvalid)
+
+# Ambulance records missing >= 2 vital signs in NEWS
+vobs <- which(!is.na(alldata$news) & # Multiply imputed
+              # Apply age criteria
+              alldata$null_age >= 18 &
+              alldata$null_age <= 100) 
+
+# Records with documented and exported PINs which can be followed up
+hospptobs <- which(alldata$export == 1 &
+                  !(alldata$amb_ambtxp == 1 &
+                    alldata$cosmicj == 0) &
+                  !(alldata$crdest %in% oordest))
+
+# Only ambulance transports to an ED
+txpobs <- which(alldata$amb_ambtxp == 1 &
+                alldata$hosp_ed == 1 &
+                !is.na(alldata$news))
+
+```
+
+We can begin by examining the distribution of our outcomes:
+
+## Ambulance Interventions
+```{r ambdata}
+ambdata <- alldata[ambobs,] %>%
+  select(starts_with("amb_"),poutref, recpoutall) %>%
+  gather(key = "key", value = "value", starts_with("amb_")) %>%
+  mutate(key = prettyname(key)) %>%
+  group_by(key) %>%
+    mutate(mean = mean(value))
+
+ambdata %>%
+  ggplot(aes(x = reorder(key,-mean), y = value)) +
+    geom_bar(stat = "summary") +
+    scale_y_continuous(breaks = seq(0,1,0.2),
+                       labels = formatpct) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x="",y="Ambulance calls with intervention (%)") +
+  stdtheme
+```
+
+We see that the bulk of patients receiving an ambulance are transported (90%), the vast majority of whom are taken to an Emergency Department. The majority of our patients (65%) receive one of the interventions enumerated in the above graph. The most common intervention included in this set of measures is the insertion of an IV catheter (48%). Interestingly, this is more common than the documentation of any prehospital medication (34%). The medication list excludes oxygen which is documented separately, and is provided to 15% of ambulance patients. In 18% of cases, the crew provides a pre-arrival notification to the receiving facility.
+
+13% of our patients are transported emergently using lights and sirens, based on the documentation of a priority 1 trip to the hospital in the dispatch or ambulance records (roughly 3% of cases report differing priorities). In our experimentation thus far, we've found that the transmission of an EKG to the CICU is a better predictor of patient outcomes than the simple capture of a pre-hospital EKG, and the prior occurs in 11% of calls. We also included a marker based on the crew's subjective documentation of a "critical" patient (Though this has no objective definition), which status was documented in 7% of calls.
+
+Spinal and/or long bone immobilization is documented as occurring in 3% of calls, and we find documentation noting bleeding control of bandaging of wounds in 1% of calls. We suspect that that bleeding control is under-documented, and are investigating additional markers to capture interventions performed on calls involving minor trauma. Finally, CPR is documented as being performed by an ambulance crew in 0.6% of calls.
+
+Note that all these measures are aggregated such that on calls with multiple units responding, a patient is considered to have received the treatment if any ambulance journal contains documentation of the intervention.
+
+## Vital Signs
+
+```{r vdata}
+vdata <- alldata[vobs,] %>%
+  select(starts_with("v_"),starts_with("news"),amb_o2,poutref,recpoutall) %>%
+  gather(key = "key", value = "value", starts_with("v_"), starts_with("news"), amb_o2) %>%
+  mutate(key = prettyname(key))
+
+vdata %>%
+  filter(!(key %in% c("NEWS score > 7","NEWS score > 4"))) %>%
+  group_by(key) %>%
+  # Remove outliers > 6 SD from median for visualization
+  mutate(v = value - median(value, na.rm = T), 
+         sd = 6*sd(value, na.rm = T)) %>%
+  filter((abs(v) < sd)) %>%
+  ggplot(aes(x = value)) +
+    geom_density(adjust = 2, size = 1) +
+  facet_wrap(~key, scales = "free") +
+  stdtheme
+
+```
+
+We find above density plots depicting the distribution of the call NEWS values (middle), and its constituent vital signs. These values represent the first set of vitals taken by the ambulance crews. The NEWS scale includes an item for the provision of supplemental oxygen administration, which we interpreted as corresponding to the oxygen administration intervention above. Note that the AVPU scale is here coded with Alert as a 4, Verbal as a 3, and so forth. Some of our ambulance nurses prefer documenting a Glasgow Coma Scale, and where an AVPU value was missing, we considered a GCS of 15 as scoring a 0 on the NEWS scale, and a GCS of 13 or below as scoring a 2. (There seems to be some controversy, both in our data and the literature, as to whether to consider GCS 14 as Alert or Verbal). NEWS scores are typically analyzed in the literature using cutoff values of 4 and 7 to denote medium risk and high risk patients respectively. In out population, Patients with a NEWS score of > 4 constitute 29% of the population, while 13% of patients have a NEWS score of over 7.
+
+Note that outlier values over 6 standard deviations from the median value have been omitted for visualization purposes, excluding dead patients with zero valued vital signs. 
+
+## Hospital outcomes
+
+```{r hospdata}
+
+hospdata <- alldata[hospobs,] %>%
+  select(starts_with("hosp_"),poutref, recpoutall) %>%
+  gather(key = "key", value = "value", starts_with("hosp_")) %>%
+  mutate(key = prettyname(key)) %>%
+  group_by(key) %>%
+    mutate(mean = mean(value))  
+
+hospdata %>%
+  ggplot(aes(x = reorder(key,-mean), y = value)) +
+    geom_bar(stat = "summary") +
+    scale_y_continuous(breaks = seq(0,1,0.2),
+                       labels = formatpct) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x="",y="Hospital journals with intervention (%)") +
+  stdtheme
+  
+```
+
+Among patients with a documented PIN, 82% have a corresponding hospital record. 70% have a record indicating a visit at an ED, while 39% were admitted to an in-patient ward, and 7% were admitted to an intensive or intermediate care unit. Radiological examinations were performed in 27% of calls, including CT scans and coronary angiograms. Surgical interventions include a broad variety of procedures, the most common of which are the closed repositioning of femur fractures (503), the insertion of venous (316) and arterial (249) catheters, and osteosynthesis of femur fractures (240). Finally, 1% of patients with a subsequent healthcare system contact within 3 days die.
+
+Unfortunately, a large portion of ED interventions are documented in free text at the hospitals, making automatic extraction and use in this project difficult. As such, while these measures correspond well with common markers of patient acuity found in the literature, they can only represent indicators of patient outcomes - Certainly not a comprehensive picture of the services provided by the secondary and tertiary care system!
+
+## Prioritization
+
+With a set of outcome measures to gauge our decisions by, a good start is to investigate the distribution of these markers among our calls as they are currently dispatched - i.e., do we see that these interventions and outcomes are differentially distributed among our dispatch priorities? For this investigation, we will examine patient cohorts consisting of only those calls for which a linked ambulance or hospital journal exists.
+
+```{r ambprio}
+  
+ambdata %>%
+  #Select some interesting measures for illustrative purposes
+  #filter(key %in% c("Ambulance transport", "Medications administered", "Spinal/longbone immobilization", "CPR administered by crew", "Patient documented as critical", "Pre-arrival notification given", "Lights & sirens to hospital", "Any intervention provided")) %>%
+  ggplot(aes(x = key, y = value)) +
+  geom_bar(aes(fill = poutref), stat = "summary", position = "dodge") +
+  geom_errorbar(aes(group = poutref), 
+                stat = "summary", 
+                position = position_dodge(width = 0.9), 
+                width = 0.5) +
+  scale_fill_manual(values = poutpal) + #, drop = FALSE
+  #scale_x_discrete(drop = FALSE)
+  scale_y_continuous(breaks = seq(0,1,0.2),
+                     labels = formatpct) +
+    theme(axis.text.x = element_text(angle = -45, hjust = 0)) +
+  labs(title = "Ambulance interventions by dispatched priority",
+       x= "",y = "Intervention prevalence (%)", fill = "Priority") +
+  stdtheme
+```
+
+Taking a broad view of these outcomes, we see some interesting effects - While we by and large see decreasing prevalences of these outcomes along the prioritization scale, for some measures, Priority 1A calls have lower intervention rates than their lower priority counterparts! This could be an artifact of the lower documentation rates among high-acuity calls noted previously. Another factor may be that many Priority 1A calls are in regards to cardiac arrests, an unfortunate percentage of which are found by ambulance crews to be cases of obvious death. Interestingly, we see almost no differentiation between priorities resulting in an ambulance response with regards to transportation rates, though less than half of patients who are initially referred and subsequently recieve an ambulance are transported. We also see that for many markers, Referred patients who later receive an ambulance seem to have lower scores than those receiving an immediate ambulance response.
+
+
+
+```{r vprio, fig.width = 7}
+vdata %>%
+  filter(key %in% c("NEWS score > 7","NEWS score > 4")) %>%
+  #Select some interesting measures for illustrative purposes
+  #filter(key %in% c("Ambulance transport", "Medications administered", "Spinal/longbone immobilization", "CPR administered by crew", "Patient documented as critical", "Pre-arrival notification given", "Lights & sirens to hospital", "Any intervention provided")) %>%
+  ggplot(aes(x = key, y = value)) +
+  geom_bar(aes(fill = poutref), stat = "summary", position = "dodge") +
+  geom_errorbar(aes(group = poutref), 
+                stat = "summary", 
+                position = position_dodge(width = 0.9), 
+                width = 0.5) +
+  scale_fill_manual(values = poutpal) + #, drop = FALSE
+  #scale_x_discrete(drop = FALSE)
+  scale_y_continuous(breaks = seq(0,1,0.2),
+                     labels = formatpct) +
+    theme(axis.text.x = element_text(angle = -45, hjust = 0)) +
+  labs(title = "NEWS scores by dispatched priority",
+       x= "",y = "Intervention prevalence (%)", fill = "Priority") +
+  stdtheme
+```
+
+As one might expect, we see that there seems to be a "dose response" with regards to NEWS scores among our dispatched priorities, though generally it appears that differentiation in terms of NEWS scores appears greater among high priority calls than among low priority calls. Note that the standard errors for referred calls are quite wide - as noted in the data quality section, it seems that vitals are often not documented for these patients!
+
+
+```{r hospprio}
+
+hospdata %>%
+  ggplot(aes(x = key, y = value, fill = poutref)) +
+  geom_bar(stat = "summary", position = "dodge", fun.y = "mean") +
+  geom_errorbar(aes(group = poutref), 
+                stat = "summary", 
+                position = position_dodge(width = 0.9), 
+                width = 0.5) +
+  scale_fill_manual(values = poutpal) +
+  scale_y_continuous(breaks = seq(0,1,0.2),
+                     labels = formatpct) +
+    theme(axis.text.x = element_text(angle = -45, hjust = 0)) +
+  labs(title = "Hospital outcomes by dispatched priority",
+       x= "",y = "Percent records with outcome", fill = "Priority") +
+  stdtheme
+```
+
+Among patients with a healthcare system contact within 72 hours, dispatch priority appears to differentiate for outcomes indicative of an emergent condition such as contact with an ED and ICU care. However, the priority with which an ambulance is dispatched to the scene does not appear to be indicative of other hospital outcomes such as admission to in-patient care or surgical/radiological interventions. Indeed, the need for such longer-term hospital interventions are often not what is being considered when determining ambulance response priority! It is encouraging that for each of these measures, referred patients have the lowest intervention rates, but 
+
+## MBS Recommended priority
+
+In addition to the dispatched priority, we can produce similar comparisons for the dispatch priority recommended by the rule-based MBS. Note that here, magenta indicates cases where the MBS was not used, as the recommended priority does not differentiate between referrals to alternate transport or care:
+
+```{r recprios}
+ambdata %>%
+  ggplot(aes(x = key, y = value, fill = recpoutall)) +
+  geom_bar(stat = "summary", position = "dodge", fun.y = "mean") +
+  scale_fill_manual(values = poutpal) +
+  scale_y_continuous(breaks = seq(0,1,0.2),
+                     labels = formatpct) +
+    theme(axis.text.x = element_text(angle = -45, hjust = 0)) +
+  labs(title = "Ambulance interventions by dispatched priority",
+       x= "",y = "", fill = "Priority")
+
+vdata %>%
+  filter(key %in% c("NEWS score > 7","NEWS score > 4")) %>%
+  #Select some interesting measures for illustrative purposes
+  #filter(key %in% c("Ambulance transport", "Medications administered", "Spinal/longbone immobilization", "CPR administered by crew", "Patient documented as critical", "Pre-arrival notification given", "Lights & sirens to hospital", "Any intervention provided")) %>%
+  ggplot(aes(x = key, y = value)) +
+  geom_bar(aes(fill = recpoutall), stat = "summary", position = "dodge") +
+  geom_errorbar(aes(group = recpoutall), 
+                stat = "summary", 
+                position = position_dodge(width = 0.9), 
+                width = 0.5) +
+  scale_fill_manual(values = poutpal) + #, drop = FALSE
+  #scale_x_discrete(drop = FALSE)
+  scale_y_continuous(breaks = seq(0,1,0.2),
+                     labels = formatpct) +
+    theme(axis.text.x = element_text(angle = -45, hjust = 0)) +
+  labs(title = "NEWS scores by dispatched priority",
+       x= "",y = "Intervention prevalence (%)", fill = "Priority") +
+  stdtheme
+
+hospdata %>%
+  ggplot(aes(x = key, y = value, fill = recpoutall)) +
+  geom_bar(stat = "summary", position = "dodge", fun.y = "mean") +
+  scale_fill_manual(values = poutpal) +
+  scale_y_continuous(breaks = seq(0,1,0.2),
+                     labels = formatpct) +
+    theme(axis.text.x = element_text(angle = -45, hjust = 0)) +
+  labs(title = "Hospital outcomes by dispatched priority",
+       x= "",y = "Percent hospital records with outcome", fill = "Priority") +
+  stdtheme
+```
+
+We find that examining MBS recommended priorities results in a similar distribution. These overall summary statistics can of course only provide an overview of the predictive value of the MBS decision rules and actual dispatched priorities in terms of various outcomes. On the whole, we see better differentiation between priorities for ambulance interventions than among hospitals, and a 
+
+## Predictors
+
+With a grasp of how these outcomes are distributed among our calls, we turn to the data available to predict these outcomes from. Conceptually, we've divided these into 4 groups:
+
+## Patient / call Characteristics
+
+This group of predictors includes the operational characteristics of the call and demographic characteristics of the patient including:
+
+Patient age  
+Patient gender  
+Number of prior contacts with the EMD center within 3 months
+Time since last contact (within 3 months)
+Time of call  
+
+Note that a 3 month time frame for prior contacts was selected primarily due to the fact that the EMD software production database retains records for this amount of time. We can begin by exploring these predictors. We see for instance that age and news scores have an intimate relationship:
+
+```{r ageNEWS}
+ggplot(data = alldata, (aes(x = null_age, y = news))) +
+         geom_jitter(width = 0.5, height = 0.5,size = 0.5,  alpha=I(0.2)) + 
+  geom_smooth(color = "red") + 
+  scale_x_continuous(breaks = seq(0,120,20)) +
+  labs(x = "Patient Age",
+       y = "NEWS Score")
+```
+
+Excluding patient under 18 from the NEWS score cohorts does indeed seem to be a good idea. Interestingly, there appears to be quite a sharp delineation around 65 years of age where NEWS scores appear to jump. We also see that there are only a few outliers above around age 105 - Given their low news scores, it seems likely that these are documentation errors. As such, we'll set age observations over 109 to missing. Given that the methods we will use to perform our modelling do not work well for extrapolation and that we have only a few observations of the very old, it seems wise to set criteria for using these models to exclude patients over 100.
+
+```{r setageNA}
+alldata$null_age[alldata$null_age > 109] <- NA
+```
+
+It's indeed quite surprising that age is not included more often in decision support algorithms. Age can serve in and of itself to substantially improve the predictive value of the current rule based decision system with regards to outcomes for which it lacks predictive value - Dividing each priority into age groups and shading each cell based on the percentage of patients admitted to in-patient care results in strong gradients for all but the highest-priority calls:
+
+```{r AgeRecprio}
+ggplot(aes(recpoutall, null_age, z = hosp_admit), data=alldata[hospobs,]) + 
+  stat_summary_2d(fun = "mean", bins = 10)  +
+  labs(title = "Hospital admission rates by Age and Reccomended priority",
+       x= "Priority",y = "Age",fill = "Admission %") +
+  stdtheme
+```
+
+The characteristics and impact of frequent utilizers of EMS services has been widely studied in the literature, including in a study performed previously at out agency. In line with our previous findings, we see that the relationship of contact frequency with patient acuity is non-linear and non-monotonic. That is to say, acuity appears to increase initially and peak among patients with a few prior contacts, and then decrease to below the acuity levels associated with patients with no prior contacts. We can investigate this in the current dataset by plotting the number of prior contacts against NEWS scores:
+
+```{r contactsNEWS}
+ggplot(alldata[vobs,], aes(x = null_pcontacts, y = news)) +
+  geom_jitter(height = 0.5,width = 0.5,size = 0.5, alpha=I(0.2)) +
+  geom_smooth(color = "red") +
+  coord_cartesian(ylim = c(0,20)) +
+  labs(title = "NEWS scores by number of prior contacts",
+       x = "Numer of prior contacts",
+       y = "NEWS score") +
+  stdtheme
+```
+
+We can characterize the effect of contact time in a similar manner (though here we plot only the smoothed Generalized Additive Model fitted to the distribution):
+
+```{r hourNEWS}
+ggplot(alldata[vobs,], aes(x = hour, y = news)) +
+  geom_jitter(height = 0.5,width = 0.5,size = 0.5, alpha=I(0.2)) +
+  geom_smooth(color = "red") +
+  coord_cartesian(ylim = c(0,7)) +
+  labs(title = "NEWS scores by time of day",
+       x = "Hour",
+       y = "NEWS score") +
+  stdtheme
+```
+
+Note that while average NEWS scores do appear to fluctuate, the effects are quite small. One can perhaps note an increase in average NEWS scores along with an increase of the overall call volume around 10:00, and a second, weaker peak at around 21:00.
+
+## Call type
+
+We've found that the call type selected by the dispatcher is a powerful predictor of patient outcome in and of itself, often accounting for the lion's share of the predictive value in the preliminary models presented in section 3. We present below a summary of some of the key attributes discussed previously as grouped by call types with more than 1000 observations for all patients with a PIN captured:
+
+```{r calltypesum, fig.width=12}
+alldata %>%
+  select(-starts_with("t_"),-starts_with("q_")) %>%
+  gather(key = "calltype", value = "value", starts_with("cat_")) %>%
+  filter(value != 0) %>%
+  select(-value) %>%
+  mutate(calltype = prettyname(calltype)) %>%
+  group_by(calltype) %>%
+  mutate(n = n()) %>%
+  filter(n > 1000) %>%
+  dplyr::summarize(n = n(),
+            `Most common Priority` = getmode(pout),
+            `Median age` = round(median(null_age, na.rm = T),1),
+            `Mean # prior contacts` = round(mean(null_pcontacts,na.rm = T), 2),
+            `Percent female` = formatpct(mean(null_female, na.rm = T)),
+            `Percent Ambulance response` = formatpct(mean(ambj)),
+            `Percent Ambulance interventions` = formatpct(mean(ifelse(ambj == 1,
+                                              amb_any,
+                                              NA),
+                                       na.rm = T)),
+            `Median NEWS score` = round(median(news,na.rm = T)),
+            `Percent with healthcare contact` = formatpct(mean(cosmicj)),
+            `percent admitted` = formatpct(mean(ifelse(cosmicj == 1,
+                                              hosp_admit,
+                                              NA),na.rm = T)),
+            `Percent treated at ICU` = formatpct(mean(ifelse(cosmicj == 1,
+                                              hosp_icu,
+                                              NA),na.rm = T))) %>%
+  arrange(desc(n)) %>%
+  kable(format="latex", booktabs = T) %>%
+  kable_styling(full_width = T)
+
+```
+
+## MBS data
+
+In addition to the initial categorization, dispatch nurses are to complete a battery of questions, the answers to which can result in an upgraded dispatch priority. As noted previously, only the relatively well-documented _ABCDE_ questions are of use for the purposes of predictive modelling. As the structured triage system and the questions it contains are protected by copyright, we unfortunately cannot provide a detailed breakdown of the distribution of answers to these questions.
+
+## Free-text
+
+In addition to the structured MBS, dispatchers are able to document free text notes in regards to the patients condition which is transmitted to ambulance crews. This provides us with some potential to use this unstructured data for the purposes of predictive modelling. We can begin by investigating the number of characters documented in the notes associated with each call:
+
+```{r fthist}
+qplot(nchar(alldata$freetext[pinobs]),binwidth = 10) +
+  scale_x_continuous(breaks = seq(0,800,100)) +
+  geom_vline(xintercept = median(nchar(alldata$freetext[pinobs])),
+             color = "red") +
+  labs(title = "Length of free text notes",
+       x = "Number of characters")
+```
+
+We see that we have a distribution of lengths with a median of 129 - Essentially a Twitter post for each call! Given this relatively short length, a Bag-of-words model is a good choice for analyzing these data. This model essentially treats each word in the text as an independent variable, discarding information regarding the relationship between words, and the position of the term in the text. To capture some of this information, the model can be expanded to include n-grams, i.e., terms consisting of multiple adjacent words. Based on an examination of our data to identify appropriate term lengths and cutoffs, we chose to include single words with 200 or more occurrences, two-word combinations with 100 or more occurrences, and three-word combinations with 20 or more occurrences. These cutoffs were set so as to roughly include common clinical presentations in the ED, but to exclude idiosyncratic terms, spelling errors, patient-specific information, etc. This resulted in a dataset containing 2279 distinct terms found across the 62854 calls with a documented free-text note. Note that while we have performed come pre-processing of these data, including the removal of non-text characters and common stop words, we have not yet found a satisfactory method to perform stemming / lemmatization for Swedish medical terminology, which process may improve our ability to utilize these data.
+
+A number of techniques may be used to explore these data to extract meaning from this quite complex dataset. These vary from the simple (word frequencies and term co-occurrences) to the sophisticated (k-means clustering and topic modelling). Our primary interest is to investigate the properties of these terms in relationship to specific binary outcomes. To perform this task visually, we developed an exploratory analysis tool based on the word-ratio approach described by Julia Silge in her excellent book [Text Mining with R](https://www.tidytextmining.com/). In this approach, we generate a plot for each outcome of interest, whereby the x axis represents a term's prevalence among calls in which a given outcome does not occur, while the y axis represents the prevalence of the term among calls with the outcome. In this regime, terms falling falling above the line x = y occur more frequently in "high acuity" calls as defined by a given measure, and vice versa. Finally, we plot these terms on a log-log scale. For example, we could examine our data to see which terms are associated with the documentation of immobilization in trauma calls:
+
+```{r wordratios}
+
+load("180903_wordratios.rda")
+
+wr <- filter(wordratios, ct == "cat_Trauma", out == "amb_immob")
+
+    ggplot(wr, aes(`0`, `1`)) +
+      geom_text(aes(label = term), size = 4, check_overlap = T,
+                position = position_jitter(height = 0.01)) +
+      scale_x_log10(labels = formatpct) +
+      scale_y_log10(labels = formatpct) +
+      geom_abline(color = "red") +
+      scale_color_manual(values = c("black","red"), guide=FALSE) +
+      labs(title = "Immobilization in Trauma calls", 
+           x = "Percent ocurrance in calls without outcome",
+           y = "Percent ocurrance in calls with outcome") +
+      stdtheme
+```
+
+
+As might be expected, words like "neck" "neck pain", "bicycle","km" (suggestive of the involvement of a vehicle), etc., are associated with immobilization. Terms like "hip", "floor", "several", "dementia", are at the lower end of the word cloud, suggesting that falls in the home are less likely to receive immobilization. Interestingly, the majority of terms lay above the red line, denoting a higher prevalence among immobilized patients. Perhaps more documentation is produced with regards to these more "serious" trauma patients?
+
+We implemented this methodology in an exploratory analysis tool for each of the outcomes reported in the previous sections within each of our call types with more than 1000 occurrences (for a total of 22 call types). Unfortunately, we have not translated the terms to English, but we encourage readers with some knowledge of Swedish to explore our data! An on-line version of the tool is available here:
+
+The source code (and the aggregated data the visualization is based on) is available on Github:
+
+## Dimension reduction
+
+Given a dataset containing over 2200 distinct terms, dimensionality reduction techniques may be useful in identifying underlying commonalities between terms. Firstly, a reduced dataset results in lower training times and more responsive predictions when developing predictive models. Dimensionality reduction can also serve to remove "noise" from the dataset, and result in lower levels of over-fitting and can address co-linearity issues.  Finally, the resulting reduced dataset representing underlying commonalities between terms could potentially improve model interpretability if the resulting vectors can be given meaning via human review.
+
+Here, we implement Singular Value Decomposition for these data. This process involves performing a factorization of a matrix, resulting in a set of three matrices containing a reversible decomposition of the original data. This decomposition results in a set of singular values ordered by the percentage of variance they capture, some subset of which may be retained to capture a portion of the variance found in the original data while reducing the number of variables. A full explanation of Singular Value Decomposition is beyond the scope of this paper, but some resources we found useful may be found here:
+
+We first calculated the term frequency / inverse document frequency value for each term occurrence, and transformed the data to conform to the bag of words model. We then applied SVD, and present below two presentations of the ordered singular values of d, corresponding to the percentage of variability in the data explained by each value, and the equivalent cumulative sum och these percentages:
+
+```{r svd}
+
+
+
+# http://genomicsclass.github.io/book/pages/svd.html
+
+# svd <- svd(as.matrix(select(alldata,starts_with("t_"))))
+# 
+# U <- svd$u
+# V <- svd$v
+# D <- diag(svd$d)
+# 
+# Yhat <- U %*% D %*% t(V)
+# resid <- Y - Yhat
+# max(abs(resid))
+
+#save(svd, file = "180922_svd.rda")
+
+load("180922_svd.rda")
+
+qplot(1:length(svd$d),
+      svd$d^2/sum(svd$d^2)*100,
+      ylab="Percent variability explained") +
+  scale_y_continuous(breaks = seq(0,0.3,0.05)) +
+  labs(title = "Singluar Value Decomposition",
+       x = "Index")
+
+qplot(1:length(svd$d), 
+      cumsum(svd$d^2)/sum(svd$d^2)*100,
+      ylim=c(0,100)) +
+  scale_y_continuous(breaks = seq(0,100,20)) +
+  labs(title = "Singluar Value Decomposition",
+       x = "Index",
+       y = "Cumulative percent variability explained")
+
+```
+
+We see that while there is some gradient which we can exploit, SVD does not result in a small number of variables which can capture a large portion of the overall variability, with individual vectors capturing only fractions of a percent of the variability in the data. Nonetheless, there is some gradient which can be exploited - it seems that including the 1000 most predictive singular values for each observation would be a good choice for "denoising" purposes and improving model training times. At this threshold, we retain just over 90% of the variability in the data, while cutting the number of variables we need to include in our models by over half.
+
+# 3) Predictive modelling
+
+## Regression
+
+With a solid grasp of the distributional characteristics of our data, we can begin the task of developing models to characterize them in a manner which can be implemented in tools to improve clinical practice. It is typically a good idea to begin with simple models to get a sense of what kind of predictive value we can expect to see in later attempts with more complex approaches. We can begin by examining the predictive value of only the patient and call characteristics which we capture. For the sake of simplicity, we will here limit ourselves to characterizing a single outcome - The documentation of any of the prehospital interventions noted above. As this outcome is binary, a reasonable choice of approach is logistic regression using a "sandwich" robust co-variance matrix estimate to account for clustering. We'll use the tools developed for this purpose in Frank Harrell's excellent Regression Modelling Strategies (rms) R package and described in the [book of the same name](https://doi.org/10.1007/978-1-4757-3462-1). We'll begin by including each of these characteristics as a simple linear predictor in such a model:
+
+```{r lrm}
+
+library(rms)
+
+ambmoddata <- alldata[ambptobs,] %>%
+  select(amb_any,null_age,null_female,null_pcontacts,null_lastcontact,hour,null_time_sin,null_time_cos, month, null_month_sin, null_month_cos, null_wkday, wkday, starts_with("cat_"), starts_with("q_"),caseid) %>%
+  filter(!is.na(null_age) & !is.na(null_pcontacts) & !is.na(null_female))
+
+names(ambmoddata) <- make.names(names(ambmoddata))
+
+dd = datadist(ambmoddata)
+options(datadist="dd")
+
+
+nulllrm <- lrm(amb_any ~  null_female + hour + wkday + month + null_age + null_pcontacts, 
+               data = ambmoddata,
+               y=T,
+               x=T) %>%
+  robcov()
+
+nulllrm
+```
+
+We see that each of these variables is a significant predictor of the provision of ambulance interventions. However, while this model has the benefit of being readily interpretable, it leaves much to be desired. As we saw previously, several of these variables are non-linear, and we need to handle them as such. To illustrate this, we can examine partial residual plots to see where these estimations are missing the mark:
+
+```{r lrmresid}
+
+
+qplot(predict(nulllrm),residuals(nulllrm, type = "pearson")) + geom_smooth(color = "red") +
+  labs(title = "Full pearson redisuals",
+       x = "Predicted value",
+       y = "Residual") +
+  stdtheme
+
+nulllrmresid <- data.frame(pred = predict(nulllrm),residuals(nulllrm, type="partial")) %>%
+  gather(key = "variable", value = "residual", null_age,null_female,hour,"month",null_pcontacts)
+
+ggplot(aes(x = pred ,y = residual),data = nulllrmresid) +
+  geom_point() +
+  geom_smooth(color = "red") + 
+  facet_wrap(~ variable) +
+  labs(title= "Partial redisuals",
+       x = "Predicted value",
+       y = "Residual") +
+  stdtheme
+
+```
+
+We see that for prior contacts in particular, assuming linearity is probably a bad idea which will result in a systematic underestimation of the need for ambulance interventions among patients with many prior EMD contacts. While age is linear (by-and-large), there are some "hiccups" among older patients that we might consider trying to smooth out. We can examine how our data is likely to perform on new datasets using bootstrapping - Taking random samples of our data a number of times, and training models (40 in this case) to predict the datapoints not selected in each sample:
+
+```{r lrmcal}
+plot(calibrate(nulllrm))
+```
+
+As with many of the partial residuals, we see that this model tends to systematically overestimate the likelihood of ambulance interventions among calls with high predicted likelihoods. To account for this within the framework of linear regression, we'll need to adopt some additional methods.
+
+A solid choice to handle non-linear predictors is the use of restricted cubic splines; This method essentially generates a fixed point estimate at _k_ intervals along the trimmed range of the variable, and fits a cubic polynomial between these points, while restricting estimates outside of this range to be linear.  For contact hour, assuming linearity is quite silly. Instead, we generate sine and cosine transformations of this variable, and include the interaction between these variables in our model to account for the cyclical nature of the 24 hour period. Furthermore, in exploratory analysis, we found that age and contact time appeared to interact - An important effect which makes sense based on theory and which should be considered in the analysis:
+
+```{r nllrm}
+
+nullnllrm <- lrm(amb_any ~  
+                   rcs(null_pcontacts,c(0,2,8,16)) + 
+                   null_female + 
+                   rcs(null_age) * 
+                   (null_time_sin *
+                   null_time_cos) +
+                   null_wkday +
+                   null_wkday:(null_time_sin *
+                   null_time_cos) +
+                   (null_month_sin *
+                   null_month_cos), 
+                 data = ambmoddata,
+                 x=T,
+                 y=T) %>%
+  robcov()
+
+print(nullnllrm, coefs = F)
+
+qplot(predict(nullnllrm),residuals(nullnllrm, type = "pearson")) + geom_smooth(color = "red") +
+  labs(title= "Full pearson redisuals",
+       x = "Predicted value",
+       y = "Residual")
+
+plot(calibrate(nullnllrm))
+
+```
+
+By applying a bit of feature engineering we've improved the fit of the model and it's calibration. These factors still only account for 2.7% of the variation in the data, and has quite poor predictive value with a C-Index (AKA. Area Under a Receiver Operating Characteristics curve - AUC) of 0.58. It can tell us something interesting about the risks associated with the predictors however!
+
+```{r nlpreds}
+
+ggplot(Predict(nullnllrm,null_pcontacts))  +
+  labs(title= "Estimated risk of ambulance intervention",
+       x = "Number of prior contacts")
+
+ggplot(Predict(nullnllrm,null_age))  +
+  labs(title= "Estimated risk of ambulance intervention",
+       x = "Patient age")
+```
+
+We see similar a similar effect with regards to ambulance interventions as we did with NEWS values, though not quite as dramatic. Interestingly, intervention rates by age appears to plateau after age 80 or so.
+
+We could also include call types coded as dummy variables in this model. Calls without a category serve here as the comparison group for the other categories, and we'll recode call types with fewer than 10 occurrences as not having used the MBS. Let's start by considering the predictive value of the call types alone:
+
+```{r catlrm}
+
+catlrmdata <- select(ambmoddata,starts_with("null_"),
+                                starts_with("cat_"),
+                                amb_any)
+
+s <- apply(catlrmdata,2,function(x){
+  ifelse(is.factor(x),T,
+  ifelse(sum(x,na.rm=T) > 10 ,T,F))
+})
+
+# Include null values
+s[1:9] <- T
+
+# Exclude cases when the MBS or "planned" calltypes were used
+s[which(names(catlrmdata) == "cat_Saknas")] <- F
+s[which(names(catlrmdata) == "cat_Planerad")] <- F
+
+catlrmdata <- catlrmdata[s]
+
+fcat <- as.formula(paste("amb_any ~",
+                paste(names(select(catlrmdata,starts_with("cat_"))), collapse = " + ")))
+
+fall <- as.formula(paste("amb_any ~  
+                   rcs(null_pcontacts,c(2,4,20)) + 
+                   null_female + 
+                   rcs(null_age) * 
+                   (null_time_sin *
+                   null_time_cos) +
+                   null_wkday +
+                   null_wkday:(null_time_sin *
+                   null_time_cos) +
+                   (null_month_sin *
+                   null_month_cos) +",
+                paste(names(select(catlrmdata,starts_with("cat_"))), collapse = " + ")))
+
+catlrm <- lrm(fcat, 
+                 data = catlrmdata,
+                 x=T,
+                 y=T) %>%
+  robcov()
+
+print(catlrm,coefs = F)
+
+```
+
+We see that Call type alone produces a model with a C-index of 0.66. Not too shabby! Let's see if we can improve this by including patient characteristics:
+
+```{r catnllrm}
+catnllrm <- lrm(fall, 
+                 data = catlrmdata,
+                 x=T,
+                 y=T) %>%
+  robcov()
+
+print(catnllrm,coefs = F)
+```
+
+We find that we achieve an improved C-index of 0.68 and corresponding increases in measures of model fit. At this point however, we should begin worrying about overfitting - Are we being too confident in our predictions given the large number of predictors? In terms of overall model predictions, we can investigate this using bootstrapping to estimate the out-of-sample performance of this model as implemented in _rms_:
+
+```{r catnl val}
+
+v <- validate(catnllrm)
+
+v
+
+print(paste("Test C-index:",round(dxy2auc(v[1,3]),3)))
+
+```
+
+We see that the test C-index (calculated as _0.5 * (test Dxy + 1)_) is 0.68, and coefficient estimates are only slightly optimistic as indicated by a test slope of 0.98. Given the relatively large number of predictors, we should be careful about interpreting individual coefficients - To be on the conservative side and limit the number of estimates we present, we can apply a Bonferroni correction, make it 100 times more extreme, and take a look at call types which differ significantly from calls where the MBS was not used at a level of p < 0.000006:
+
+```{r catodds}
+c <- data.frame(var = as.factor(names(coef(catnllrm))),coef = coef(catnllrm), se = sqrt(diag(vcov(catnllrm))))
+c <- c[which(grepl("cat_",rownames(c))),]
+c$z <- c$coef/c$se
+c$p <- 2*pnorm(-abs(c$z))
+c$or <- exp(c$coef)
+c$cilow <- exp(c$coef - qnorm(0.975) * c$se)
+c$cihi <- exp(c$coef + qnorm(0.975) * c$se)
+
+# Divide desired p value by model degrees of freedom
+pcrit <- 0.05 / (catnllrm$stats[4] * 100)
+
+filter(c, p < pcrit) %>%
+  ggplot(aes(x = reorder(prettyname(var,mod = T),coef), y = or, ymin= cilow, ymax = cihi)) +
+  geom_pointrange() +
+  geom_hline(yintercept = 1, color = "red") +
+  scale_y_log10() +
+  coord_flip()+
+  labs(x = "Call Type",
+       y = "Odds Ratio") +
+  stdtheme 
+
+
+```
+
+Perhaps unsurprisingly, we find that childbirth, chest pain and active seizure calls have the highest intervention rates, with odds ratios of around 5. At the low end, we see that calls related to urinary catheter blockages and urine retention, as well as calls relating to psychiatric problems have odds ratios of around 0.3.
+
+To improve this model, we need to begin considering how to account for the fact that patient characteristics are likely to have differential effects for different call types! Performing this task manually based on theory is a daunting task, and becomes increasingly difficult as additional predictors are proposed for the model. Modern variable selection techniques are available which could automate this task, and along with regularization, regression does offer a viable method to developing models with predictive values on par with machine learning based techniques.
+
+## Gradient Boosting
+
+```{r housekeeping}
+# Clear out objects in memory
+
+# keep <- c(ls()[grepl("obs|alldata|pout|varnames",ls())])
+# 
+# l <- sapply(ls(), function(x){
+#   ifelse(class(get(x))[[1]] == "function" |
+#            x %in% keep,
+#            T,F)
+# }) 
+# 
+# rm(list = ls()[!l])
+
+# Define lists of column indexes for each set of predictors
+
+predcolsdf <- list(recpout = which(grepl("recpoutalln",names(alldata))),
+                 pout = which(grepl("^poutn",names(alldata))),
+                 null = which(grepl("^null_",names(alldata))),
+                 cat = which(grepl("^null_|^cat_",names(alldata))),
+                 mbs = which(grepl("^null_|^cat_|^q_|recpoutalln",names(alldata))),
+                 text = which(grepl("^op_|^t_",names(alldata))),
+                 alldisp = which(grepl("^null_|^cat_|^q_|^op_|^t_|recpoutalln",names(alldata))),
+                 allamb = which(grepl("^null_|^cat_|^q_|^amb_|^v_|poutn|recpoutalln",names(alldata))),
+                 news = which(grepl("news$",names(alldata))))
+
+# Define lists of column indexed for each set of outcomes
+
+outcolsdf <- list(amb = which(grepl("^amb_",names(alldata))),
+                 news = which(grepl("^news_",names(alldata))),
+                 hosp = which(grepl("^hosp_",names(alldata))))
+
+moddata <- alldata[,unique(unlist(list(predcolsdf,outcolsdf)))]
+
+# convert data to sparse matrix
+
+moddata <- Matrix::Matrix(as.matrix(moddata), 
+                          sparse = TRUE)
+
+# ...And again now that everything else is cleaned out
+
+predcols <- list(recpout = which(grepl("recpoutalln",dimnames(moddata)[[2]])),
+                 pout = which(grepl("^poutn",dimnames(moddata)[[2]])),
+                 null = which(grepl("^null_",dimnames(moddata)[[2]])),
+                 cat = which(grepl("^null_|^cat_",dimnames(moddata)[[2]])),
+                 mbs = which(grepl("^null_|^cat_|^q_|recpoutalln",dimnames(moddata)[[2]])),
+                 text = which(grepl("^op_|^t_",dimnames(moddata)[[2]])),
+                 alldisp = which(grepl("^null_|^cat_|^q_|^op_|^t_|recpoutalln",dimnames(moddata)[[2]])),
+                 allamb = which(grepl("^null_|^cat_|^q_|^amb_|^v_|poutn|recpoutalln",dimnames(moddata)[[2]])),
+                 news = which(grepl("news$",dimnames(moddata)[[2]])))
+
+outcols <- list(amb = which(grepl("^amb_",dimnames(moddata)[[2]])),
+                 news = which(grepl("^news_",dimnames(moddata)[[2]])),
+                 hosp = which(grepl("^hosp_",dimnames(moddata)[[2]])))
+
+testparams <- alist(data = dat, 
+                    label = lab, 
+                    booster = "dart",
+                    rate_drop = 0.2,
+                    nrounds = 100,
+                    maximize = T,
+                    max_depth = 2,
+                    nfold = 5,
+                    verbose = F,
+                    prediction = T,
+                    eval_metric = "auc",
+                    objective = "binary:logistic")
+
+
+```
+
+
+To account for such interaction effects, and for other issues which arise as we add increasingly complex forms of data to our dataset, we experimented with a number of machine learning techniques including random forest models, neural networks, and gradient boosting. While we will provide a comparison of the performance of these techniques in a future publication, it is not the goal of this analysis to determine an optimal modelling technique for use in our data. Rather, we are interested in exploring the general and relative value of our predictors in terms of estimating the likelihood of outcomes of interest. In this way, we can use predictive models as an exploratory tool to understand the relationships present in our data.
+
+As such, we will limit this analysis to considering the technique we have found to work best: Extreme gradient boosting as implemented in the _xgboost_ package. We've found this methodology to have a number of benefits including good performance on unbalanced datasets, graceful handling of data missing at random, support for GPU computation, and a generally forgiving implementation in R. The method as we use it here involves the use of decision trees which identify splits in the data which are most predictive for the outcome. For instance, a simple tree predicting ambulance interventions based only age and category may look like this:
+
+```{r toyxgb}
+
+dat <- moddata[ambptobs,c(3,12:78)]
+lab <- moddata[ambptobs,2698]
+
+
+# xgbtoymod <- do.call(xgboost,testparams)
+# save(xgbtoymod,file = "xgbtoymod.rda")
+
+load("xgbtoymod.rda")
+
+t <- xgb.plot.tree(model = xgbtoymod,
+              trees = 0)
+
+# Sparse matrix makes split values weird
+t$x$diagram <- gsub("-0.000000953674316","0.5",t$x$diagram)
+
+testparams$max_depth <- 6
+
+include_graphics('./xgbtree.png')
+
+```
+
+Following along this tree, we see that it first determines whether this is a chest pain call - If so, it moves downwards and checks the patients age. If the patient's age is 33 or less, the model assigns a value of -0.05, otherwise it assigns a value of 0.33. Otherwise, this tree checks if the call type is difficulty breathing, assigning a value of 0.2, or 0.01 elsewise. A number of similar trees are generated, and the values assigned by each tree are summed to result in a final predicted value. In our case of classification, and additional logistic transformation is applied to the summed predicted values, resulting in a probability between 0 and 1.
+
+Gradient boosting involves training such trees in an iterative process whereby successive trees attempt to further subdivide groups of observations, focusing on cases where residual values are large (i.e., where the model performs poorly). Gradient boosting models are trained through a number of iterations - The number of such generations a model is to be run, along with a number of other "hyperparameters" such as the maximum depth of trees (2 in the example above), the size of the "steps" taken in each iteration, etc. The settings for these are typically determined by examining how changes in these values affect the performance of the model in test data - Data not shown to the model during training.
+
+We used the bootstrap to evaluate this for our logistic regression models, and we'll use a similar technique called cross-validation for these gradient boosting models. Note that we will for the purposes of this analysis not be performing final hyperparameter tuning - Rather, we will report models based on the default settings of xgboost, with the exception of adding a drop-out procedure to control over-fitting in lieu of a more sophisticated approach. For illustrative purposes here, we will train each model for 100 iterations.
+
+Let's begin by re-fitting our last model using xgboost. We generate a plot of how the predictive value of the model changes as additional iterations improve model fit, indicated by the mean AUC found in the test and training folds of the data and their standard deviation:
+
+```{r xgbcat}
+dat <- moddata[ambptobs,predcols$cat]
+lab <- moddata[ambptobs,2698]
+
+# xgbcatmodcv <- do.call(xgb.cv,testparams)
+# save(xgbcatmodcv,file = "xgbcatmodcv.rda")
+
+load("xgbcatmodcv.rda")
+
+plotlog(xgbcatmodcv$evaluation_log)
+
+print(paste("Maximum test AUC:",max(xgbcatmodcv$evaluation_log$test_auc_mean)))
+
+  
+```
+
+We see that the gradient boosting model achieves a predictive value of 0.67, similar to that produced by logistic regression. Note that these models tend to over-fit, and as such summary statistics regarding model performance in training data should generally be disregarded. We should also check to make sure that our residuals are well distributed:
+
+```{r xgbcatresid}
+
+pred <- xgbcatmodcv$pred
+resid <- lab - pred
+
+qplot(pred,resid) + geom_smooth(color = "red")
+```
+
+We also find that out-of-sample model residuals are reasonably well distributed, though there is some deviation suggestive of optimism in the model... We'll have to investigate this!  The residuals produced by regression and gradient boosting approaches are notably similar in overall shape. While the nature of this model precludes the direct extraction of model coefficients, there are methods available to examine variable importance:
+
+```{r xgbcatimp}
+
+# xgbcatmod <- do.call(xgboost,testparams)
+# save(xgbcatmod,file = "xgbcatmod.rda")
+
+load("xgbcatmod.rda")
+
+xgbimp <- xgb.importance(feature_names = dimnames(dat)[[2]], model = xgbcatmod) %>%
+  mutate(Feature = prettyname(Feature)) %>%
+  filter(Gain > 0.01) %>%
+  as.data.table()
+
+xgb.plot.importance(xgbimp)
+```
+
+We can see that a the patient's age was the most important predictor, followed by call types of chest pain and breathing, followed by the contact time. This does not tell us however the direction of the effect!
+
+## MBS data
+
+Using gradient boosting, we can begin to explore the predictive value of our other datasets. We begin by passing a dataset containing the MBS questions and the recommended priority their combination results in to our model:
+
+```{r xgbmbs}
+
+dat <- moddata[ambptobs,predcols$mbs]
+
+# xgbmbsmodcv <- do.call(xgb.cv,testparams)
+# save(xgbmbsmodcv,file = "xgbmbsmodcv.rda")
+
+load("xgbmbsmodcv.rda")
+
+plotlog(xgbmbsmodcv$evaluation_log)
+
+print(paste("Maximum test AUC:",max(xgbmbsmodcv$evaluation_log$test_auc_mean)))
+```
+
+We see a small gain in model performance upon including the MBS data in the model. Note that the maximum predictive value is achieved at around 50 iterations, after which point only the training AUC increases, indicating overfitting.
+
+## Text data
+
+We now turn to consider the performance of free-text data using these models. We can begin by assessing the performance of the raw text data. Documentation practices vary from nurse to nurse at the EMD center, and taking consideration for which particular nurse is documenting the call appears to improve the predictive value of the free text data. We include effect this by generating dummy variables for each operator with more than 50 calls taken.
+
+```{r xgbtext}
+dat <- moddata[ambptobs,predcols$text]
+
+# xgbtextmodcv <- do.call(xgb.cv,testparams)
+# save(xgbtextmodcv,file = "xgbtextmodcv.rda")
+
+load("xgbtextmodcv.rda")
+
+plotlog(xgbtextmodcv$evaluation_log)
+
+print(paste("Maximum test AUC:",max(xgbtextmodcv$evaluation_log$test_auc_mean)))
+
+```
+
+Using text data alone, we find an AUC similar to that of the category based model. Note also that the standard deviation of the cross-validated results is quite a bit larger, suggesting that the predictive value f this model is somewhat unstable. We can also have a look at the most important terms in this model:
+
+```{r termimportance}
+# xgbtextmod <- do.call(xgboost,testparams)
+# save(xgbtextmod,file = "xgbtextmod.rda")
+
+load("xgbtextmod.rda")
+
+xgbimp <- xgb.importance(model = xgbtextmod) %>%
+  mutate(Feature = gsub("t_","",Feature))
+
+xgbimp[1:20,] %>%
+ggplot(aes(x = reorder(Feature,Gain),
+                       y = Gain)) + 
+  geom_bar(stat = "identity") +
+  labs(title = "Gradient Boosting variable importance",
+       x = "Term") +
+  coord_flip()
+  
+
+```
+
+While chest pain (bröstsmärta) is the most important term, interestingly, the words "sjukresa" and "wants" (vill) are quite important predictors - This is understandable in the sense that these are indicators of the patient's or nurses desire to dispatch an ambulette ("sjuktransport").. This could be problematic, as this is typically documented after the decision to use such a resource has been made!
+
+```{r xgbsvd}
+# We can also see how using the first 1000 elements of the SVD matrix we examined in the previous section affects predicions:
+
+# dat <- svd$u[ambptobs,1:1000]
+# 
+# xgbmodcv <- do.call(xgb.cv,testparams)
+# 
+# plotlog(xgbmodcv$evaluation_log)
+# 
+# print(paste("Maximum test AUC:",max(xgbsvdmodcv$evaluation_log$test_auc_mean)))
+# 
+# remove(svd)
+
+#We see a small increase in AUC, though interestingly, this also significantly increases overfitting in the model! This could be due to each singular value being orthagonal to the others, with any interactions identified by the boosting algorithm being spurious.
+```
+
+## Final Model
+
+By combining all of the predictors noted above, at last we can combine each of the datasets and see how a model able to consider all of these data performs:
+
+```{r xgbfinal}
+
+dat <- moddata[ambptobs,predcols$alldisp]
+
+# xgbfinalmodcv <- do.call(xgb.cv,testparams)
+# save(xgbfinalmodcv,file = "xgbfinalmodcv.rda")
+
+load("xgbfinalmodcv.rda")
+
+plotlog(xgbfinalmodcv$evaluation_log)
+
+print(paste("Maximum test AUC:",max(xgbfinalmodcv$evaluation_log$test_auc_mean)))
+```
+
+By combining all of these data, we again see a modest increase in predictive value. 
+
+## Model summaries
+
+With an understanding of how these models are generated, let's now have a look at how these models perform for each of our outcomes of interest. To summarize our results so far, we can extract the cross-validated AUC for each of the nested sets of predictors for each outcome. There are some issues with AUC as a measure of predictive value (it tends to be inflated for unbalanced outcomes, and underestimates the relative performance of predictors with only a distinct values), but we will use it nonetheless given it's prevalence as an overall measure of predictive value in the literature. We can begin with ambulance interventions (error bars again indicate one standard error from the mean):
+
+```{r ambsum}
+
+#           # Train models for each set of predictors/outcomes
+# modsum <- rbind(
+#           mbs_modsum(data = moddata,
+#                       obs = ambptobs,
+#                       cols = predcols[3:5],
+#                       outs = outcols[[1]],
+#                       methods = "xgb",
+#                       note = "ambptobs"),
+#            mbs_modsum(data = moddata,
+#                       obs = vobs,
+#                       cols = predcols[3:5],
+#                       outs = outcols[[2]],
+#                       methods = "xgb",
+#                       note = "vobs"),
+#            mbs_modsum(data = moddata,
+#                       obs = hospptobs,
+#                       cols = predcols[3:5],
+#                       outs = outcols[[3]],
+#                       methods = "xgb",
+#                       note = "hospptobs"))
+#           
+#           # Save predictions of full models for further analysis
+# modsum <- rbind(modsum,
+#           mbs_modsum(data = moddata,
+#                       obs = ambptobs,
+#                       cols = predcols[7],
+#                       outs = outcols[[1]],
+#                       preds = T,
+#                       methods = "xgb",
+#                       note = "ambptobs_excl"),
+#            mbs_modsum(data = moddata,
+#                       obs = vobs,
+#                       cols = predcols[7],
+#                       outs = outcols[[2]],
+#                       preds = T,
+#                       methods = "xgb",
+#                       note = "vobs_excl"),
+#            mbs_modsum(data = moddata,
+#                       obs = hospptobs,
+#                       cols = predcols[7],
+#                       outs = outcols[[3]],
+#                       preds = T,
+#                       methods = "xgb",
+#                       note = "hospptobs_excl"))
+# 
+#            # Calculate AUC for reccomended and actual priorities
+# modsum <- rbind(modsum,
+#            mbs_modsum(data = moddata,
+#                        obs = ambptobs,
+#                        cols = predcols[1:2],
+#                        outs = outcols[[1]],
+#                        methods = "auc",
+#                        note = "ambptobs_excl"),
+#            mbs_modsum(data = moddata,
+#                       obs = vobs,
+#                       cols = predcols[1:2],
+#                       outs = outcols[[2]],
+#                       methods = "auc",
+#                       note = "vobs_excl"),
+#            mbs_modsum(data = moddata,
+#                       obs = hospptobs,
+#                       cols = predcols[1:2],
+#                       outs = outcols[[3]],
+#                       methods = "auc",
+#                       note = "hospptobs_excl"),
+#           mbs_modsum(data = moddata,
+#                       obs = txpobs,
+#                       cols = predcols[c(1:2,9)],
+#                       outs = outcols[[3]][-1],
+#                       methods = "auc",
+#                       note = "txpobs_excl"))
+#
+#           # Train models for predicting hospital outcomes among transported patients
+# modsum <- rbind(modsum,
+#            mbs_modsum(data = moddata,
+#                       obs = txpobs,
+#                       cols = predcols[c(7,8)], #3:5,
+#                       outs = outcols[[3]][-1],
+#                       methods = "xgb",
+#                       note = "txpobs_excl"))
+# modsum <- filter(modsum, !dat == "")
+# save(modsum,file = "180921_modsum.rda")
+
+load("180921_modsum.rda")
+
+modsum$dat <- factor(prettyname(modsum$dat), 
+                     levels = c("Characteristics only", 
+                                "Call Types", 
+                                "MBS", 
+                                "All Dispatch data",
+                                "Reccomended priority", 
+                                "Dispatched Priority", 
+                                "NEWS score", 
+                                "Ambulance data"))
+
+  #Select some interesting measures for illustrative purposes
+  #filter(key %in% c("Ambulance transport", "Medications administered", "Spinal/longbone immobilization", "CPR administered by crew", "Patient documented as critical", "Pre-arrival notification given", "Lights & sirens to hospital", "Any intervention provided")) %>%
+ggplot(filter(modsum, note == "ambptobs", method == "xgb"), 
+       aes(x = prettyname(lab), 
+           y = max_test_auc,
+           ymin = max_test_auc-max_test_auc_std/sqrt(testparams$nfold),
+           ymax = max_test_auc+max_test_auc_std/sqrt(testparams$nfold), 
+           fill = dat)) + 
+  geom_bar(stat = "identity",
+           position = "dodge") +
+  geom_errorbar(stat = "identity",
+                width = 0.5,
+           position = position_dodge(width = 0.9)) +
+  coord_cartesian(ylim = c(0.4,1))  +
+  theme(axis.text.x = element_text(angle = -45, hjust = 0)) +
+  #facet_wrap(~note) +
+  labs(title = "Test AUC by Ambulance Intervention and Predictor", 
+       x = "", y = "AUC",fill = "Predictors") +
+  stdtheme
+
+```
+
+Across the board, we see modest improvements upon adding additional predictors, though for some interventions, adding the text data decreased test AUC, indicative of overfitting. We see similar patterns for NEWS and hospital outcomes:
+
+```{r vsum, fig.width=7}
+ggplot(filter(modsum, note == "vobs", method == "xgb"), 
+       aes(x = prettyname(lab), 
+           y = max_test_auc,
+           ymin = max_test_auc-max_test_auc_std/sqrt(testparams$nfold),
+           ymax = max_test_auc+max_test_auc_std/sqrt(testparams$nfold),  
+           fill = dat)) + 
+  geom_bar(stat = "identity",
+           position = "dodge") +
+  geom_errorbar(stat = "identity",
+                width = 0.5,
+           position = position_dodge(width = 0.9)) +
+  coord_cartesian(ylim = c(0.4,1))  +
+  theme(axis.text.x = element_text(angle = -45, hjust = 0)) +
+  #facet_wrap(~note) +
+  labs(title = "Test AUC by NEWS score cutoff and Predictor", x = "", y = "AUC",fill = "Predictors") +
+  stdtheme
+```
+
+```{r hospsum}
+ggplot(filter(modsum, note == "hospptobs", method == "xgb"), 
+       aes(x = prettyname(lab), 
+           y = max_test_auc,
+           ymin = max_test_auc-max_test_auc_std/sqrt(testparams$nfold),
+           ymax = max_test_auc+max_test_auc_std/sqrt(testparams$nfold),  
+           fill = dat)) + 
+  geom_bar(stat = "identity",
+           position = "dodge") +
+  geom_errorbar(stat = "identity",
+                width = 0.5,
+           position = position_dodge(width = 0.9)) +
+  coord_cartesian(ylim = c(0.4,1))  +
+  theme(axis.text.x = element_text(angle = -45, hjust = 0)) +
+  #facet_wrap(~note) +
+  labs(title = "Test AUC by Hospital Outcome and Predictor", x = "", y = "AUC",fill = "Predictors") +
+  stdtheme
+```
+
+Each indicator improves steadily with the addition of additional predictors, with the exception of 3 day mortality which improves considerably upon the addition of text data, but does not suggest improvement by the addition of MBS questions. Recall that AUC is sensitive to unbalance in datasets (i.e., having large numbers of negative cases improves AUC), and as such, comparisons should not be made between outcomes here.
+
+## Comparative analysis
+
+We can also compare the performance of these models with the MBS recommended and dispatched priorities. Here we'll include only calls where the MBS was used, thereby generating a recommended priority:
+
+```{r predsum}
+
+recpoutobs <- which(!is.na(alldata$recpoutalln))
+
+
+# ambpreds <- extract_preds(modsum %>%
+#                           filter(note %in% c("ambptobs_excl"), 
+#                                  dat %in% c("alldisp")))
+# vpreds <- extract_preds(modsum %>%
+#                           filter(note %in% c("vobs_excl"), 
+#                                  dat %in% c("alldisp")))
+# hosppreds <- extract_preds(modsum %>%
+#                           filter(note %in% c("hospptobs_excl"), 
+#                                  dat %in% c("alldisp")))
+
+# recpoutsum <- rbind(mbs_modsum(data = moddata,
+#                       obs = intersect(ambptobs,recpoutobs),
+#                       cols = predcols[1:2],
+#                       outs = outcols[[1]],
+#                       methods = "auc",
+#                       note = "ambptobs"),
+#                      mbs_modsum(data = moddata,
+#                       obs = intersect(vobs,recpoutobs),
+#                       cols = predcols[1:2],
+#                       outs = outcols[[2]],
+#                       methods = "auc",
+#                       note = "vobs"),
+#                      mbs_modsum(data = moddata,
+#                       obs = intersect(hospptobs,recpoutobs),
+#                       cols = predcols[1:2],
+#                       outs = outcols[[3]],
+#                       methods = "auc",
+#                       note = "hospptobs"),
+#                     
+#                     mbs_modsum(data = moddata,
+#                       obs = intersect(ambptobs,recpoutobs),
+#                       cols = predcols[7],
+#                       outs = outcols[[1]],
+#                       methods = "xgb",
+#                       note = "ambptobs"),
+#                     mbs_modsum(data = moddata,
+#                       obs = intersect(vobs,recpoutobs),
+#                       cols = predcols[7],
+#                       outs = outcols[[2]],
+#                       methods = "xgb",
+#                       note = "vobs"),
+#                     mbs_modsum(data = moddata,
+#                       obs = intersect(hospptobs,recpoutobs),
+#                       cols = predcols[7],
+#                       outs = outcols[[3]],
+#                       methods = "xgb",
+#                       note = "hospptobs"),
+#                     
+#                     mbs_modsum(data = moddata,
+#                       obs = intersect(txpobs,recpoutobs),
+#                       cols = predcols[c(1:2,9)],
+#                       outs = outcols[[3]][-1],
+#                       methods = "auc",
+#                       note = "txpobs"),
+#                     
+#                     mbs_modsum(data = moddata,
+#                       obs = intersect(txpobs,recpoutobs),
+#                       cols = predcols[c(7,8)],
+#                       outs = outcols[[3]][-1],
+#                       methods = "xgb",
+#                       note = "txpobs"))
+# 
+# recpoutsum <- filter(recpoutsum, !dat == "")
+# recpoutsum$dat <- factor(recpoutsum$dat, 
+#                      levels = c("null", 
+#                                 "cat", 
+#                                 "mbs", 
+#                                 "alldisp", 
+#                                 "allamb", 
+#                                 "recpout", 
+#                                 "pout", 
+#                                 "news"))
+# recpoutsum$note <- factor(recpoutsum$note,
+#                      levels = c("ambptobs",
+#                                 "vobs",
+#                                 "hospptobs",
+#                                 "txpobs"))
+# save(recpoutsum,file = "180923_recpoutsum.rda")
+
+load("180923_recpoutsum.rda")
+
+recpoutsum$dat <- factor(prettyname(recpoutsum$dat), 
+                     levels = c("Characteristics only", 
+                                "Call Types", 
+                                "MBS", 
+                                "All Dispatch data",
+                                "Ambulance data",
+                                "Reccomended priority", 
+                                "Dispatched Priority", 
+                                "NEWS score"))
+
+#Select some interesting measures for illustrative purposes
+#filter(recpoutsum, !lab %in% c("amb_alert", "amb_ekgtx", "amb_gauze", "amb_iv")) %>%
+filter(recpoutsum, note == "ambptobs") %>%
+ggplot(aes(x = prettyname(lab), 
+           y = max_test_auc,
+           ymin = max_test_auc - max_test_auc_std/sqrt(testparams$nfold),
+           ymax = max_test_auc + max_test_auc_std/sqrt(testparams$nfold),  
+           fill = dat)) + 
+  geom_bar(stat = "identity",
+           position = "dodge") +
+  geom_errorbar(stat = "identity",
+                width = 0.5,
+           position = position_dodge(width = 0.9)) +
+  coord_cartesian(ylim = c(0.4,1))  +
+  theme(axis.text.x = element_text(angle = -45, hjust = 0)) +
+  labs(title = "Test AUC by Outcome and Predictor", 
+       x = "", y = "AUC",fill = "Predictors") +
+  stdtheme
+```
+
+We see that for many ambulance interventions, these models perform better than the recommended priority of the MBS at predicting the likelihood of the outcome occurring, but worse than the actual dispatched priority. Among measures related to specific interventions however, the models perform better than both. 
+
+```{r}
+filter(recpoutsum, note %in% c("vobs","hospptobs")) %>%
+ggplot(aes(x = prettyname(lab), 
+           y = max_test_auc,
+           ymin = max_test_auc - max_test_auc_std/sqrt(testparams$nfold),
+           ymax = max_test_auc + max_test_auc_std/sqrt(testparams$nfold),  
+           fill = dat)) + 
+  geom_bar(stat = "identity",
+           position = "dodge") +
+  geom_errorbar(stat = "identity",
+                width = 0.5,
+           position = position_dodge(width = 0.9)) +
+  coord_cartesian(ylim = c(0.4,1))  +
+  theme(axis.text.x = element_text(angle = -45, hjust = 0)) +
+  facet_grid(~note, scales="free_x", space = "free_x") +
+  labs(title = "Test AUC by Outcome and Predictor", 
+       x = "", y = "AUC",fill = "Predictors") +
+  stdtheme
+```
+
+
+Among NEWS and hospital outcome measures, these models outperform current prioritizations consistently.
+```{r txpsum}
+filter(recpoutsum, note == "txpobs") %>%
+ggplot(aes(x = prettyname(lab), 
+           y = max_test_auc,
+           ymin = max_test_auc - max_test_auc_std/sqrt(testparams$nfold),
+           ymax = max_test_auc + max_test_auc_std/sqrt(testparams$nfold), 
+           fill = dat)) + 
+  geom_bar(stat = "identity",
+           position = "dodge") +
+  geom_errorbar(stat = "identity",
+                width = 0.5,
+           position = position_dodge(width = 0.9)) +
+  coord_cartesian(ylim = c(0.4,1))  +
+  theme(axis.text.x = element_text(angle = -45, hjust = 0)) +
+  labs(title = "Test AUC by Outcome and Predictor (Patients transported to ED)", 
+       x = "", y = "AUC",fill = "Predictors") +
+  stdtheme
+```
+
+The final panel above includes two additional sets of predictors: One gradient boosting model which includes the ambulance interventions and vital signs as predictors along with dispatch data, and the AUC value of the NEWS score for each of the hospital outcomes. We see that with the exception of 3-day morality, the dispatch data based model outperforms NEWS, with the model containing predictors from the ambulance journal performing better still, with perhaps a slightly higher predictive than NEWS for 3-day mortality.
+
+# 4) Discussion
+
+In this analysis, we have presented a description of the distribution of a number of measures of patient acuity in our data as they are dispatched today. We continued on to describe our modelling approach, and the performance of a set of preliminary models with regards to these markers. This is by no means an exhaustive validation of these markers as measures of patient acuity, nor of the validity of the models. There is much still to be done - While these results perhaps demonstrate the feasibility of the approach, only validation in an unexamined dataset can address the "researcher degrees of freedom" problem inherent in this type of analysis. Furthermore, the predictions made for one outcome should be validated against other outcomes to establish their generalizability (e.g., do the model predictions for lights and sirens to the hospital also predict ICU treatment?). The residuals of the models must also be examined in detail with regards to various characteristics - Do our models over or under estimate risks for older patients or patients with multiple contacts? Do the models work better for patients calling from different areas with different socioeconomic conditions? Do the models work better for certain call types? Upon answering these questions to our satisfaction, we plan to validate our models in data from 2018 and publish the results in a peer-reviewed article. 
+
+A number of interesting effects have been identified which could yield interesting follow-up investigations. Our investigation of data quality reveals a somewhat troubling trend, whereby missingness is associated with patient acuity. In most pre-hospital care research, observations with missing data are excluded. If the pattern of higher levels of missingness for high-acuity patients also occurs in other agencies, this practice could introduce bias to model estimates. In terms of outcomes, we found that 65% ambulance calls had no documented interventions beyond transportation. While we are certainly missing some concrete medical interventions with these measures, and we cannot hope to capture "softer" services that ambulance crews provide (e.g. patient navigation, psychological comfort, etc.), this suggests that there is room to improve the specificity of the dispatching process. In our manual review of ambulance journals, we've found that about 1/3 to 1/2 of calls dispatched priority 1 but receiving no interventions nonetheless had some form of ambulance need. Unfortunately, these forms of soft care are difficult to document in a structured manner, consequently making them difficult to capture using predictive models.
+
+In our descriptive analysis, we found that the prioritizations made by ambulance nurses demonstrated a comparatively high degree of differentiation among outcomes relating to high acuity conditions, but had a lower degree of predictive value with regards to outcomes beyond the patients immediate care needs. Ambulance priority was for instance perhaps even negatively associated with hospital admission (though patients referred to alternate care did have lower admission rates). It is of course appropriate that nurses focus on the acute condition of the patient when determining response priority, though this could be an indication that there is some room for improvement. This lack of differentiation could also be explained by the large number of elderly patients transported with a low priority, whose more comprehensive care needs lead to higher rates of admission:
+
+
+```{r ages}
+t <- data.frame(with(alldata, tapply(null_age, pout, mean,na.rm=T)))
+colnames(t) <- "Mean age"
+t %>%
+  kable(format="latex", booktabs = T) %>%
+  kable_styling(full_width = F)
+```
+
+
+
+Indeed, in a simple logistic model controlling for patient age, we see that the effect is reversed, though differentiation is still quite poor:
+```{r ageadj,fig.height=4,fig.width=4}
+t <- glm(hosp_admit ~ null_age + pout, 
+         data=alldata[hospobs,],
+         family = binomial)
+
+library(effects)
+as.data.frame(Effect(c("pout"),t)) %>%
+  ggplot(aes(x = pout,
+             y = fit,
+             ymin = lower,
+             ymax = upper,
+             fill = pout)) +
+  geom_bar(stat = "identity") +
+  geom_errorbar(width = 0.5) +
+  scale_fill_manual(values = poutpal) + #, drop = FALSE
+  #scale_x_discrete(drop = FALSE)
+  scale_y_continuous(breaks = seq(0,1,0.2),
+                     labels = formatpct) +
+  labs(title = "Admission by priority",
+       x= "",y = "Percent with admission (Age Adjusted)", fill = "Priority") +
+  stdtheme
+```
+
+With regards to our predictive models, we found a number of interesting effects. It can be seen that the bulk of the predictive value of the models are drawn from the patient characteristics and call type documented by the nurse. While adding MBS question data and text data does increase the predictive value somewhat in the majority of cases, the value added is marginal. This could be due to a number of reasons - Documentation compleness of the MBS leaves something to be desired, while our text data is rife with spelling errors and ideosyncratic terminology and abbreviations. We plan on addressing these data quality issues as we move forwards, and additional text pre-processing could improve the yield of this unstructured data.  Interestingly, it seems that cases where text data tends towards overfitting are outcomes where there is a high degree of discretion on the part of ambulance crews - e.g., whether to drive priority 1 to the hospital, the documentation of a "critical" patient in the ambulance record, and perhaps even whether to initiate CPR. It is also almost certainly the case that we have not yet identified the optimal methods for modelling the data, and a few more percentage points of AUC can likely be garnered by tuning model hyperparameters.
+
+While the models were able to out-perform triage determinations with regards to hospital outcomes and vital signs, they struggled to do so for many ambulance-based indicators of patient acuity. This suggests that these models may be able to deliver the most value to nurses in terms of assessing longer-term care needs, with the rule-based system sufficing to identify conditions necessitating an emergency ambulance response. It is also interesting to note that in every case, actual dispatched priorities outperformed MBS reccomended priorities in terms of predictive value. However, it may also be noted that in many cases where patients have been inappropriately referred to non-emergency care, the MBS rules would have reccomended a higher priority. This illustrates the point that improved accuracy could be undesireable if it comes at the cost of patient safety!
+
+## Further development
+
+A major task which lies before us is to aggregate these measures and present risk estimates in a manner which makes them intelligible to nurses without statistical expertise. Our goal it to present a maximum of 3 indicators to the nurse in the user interface of the MBS. A number of approaches could be taken to achieve this. The predicted value of each indicator could for instance be weighted based on some measure of the acuity the outcome represents - For instance, a patient with high risk of ICU treatment is likely more acute than a patient with a high risk of admission to any in-patient ward. The weighted sum of all predictors could then be presented to the nurse as the final risk score. Another approach could involve establishing appropriate levels of sensitivity for each outcome based on clinical expertise, with an alert appearing if any measure exceeds this level.
+
+It also lays before us to define a set of quality measures to track during the course of our evaluation of these tools. Several of these measures have face validity as measures of triage error; for instance patients dispatched priority 2 but transported to the hospital priority 1, and referred patients treated at the ICU. Others have value as measures of system specificity, for instance the percentage of priority 1 calls with no documented interventions. While it is the goal of this project to develop a tool to prospectively assist nurses in appropriately characterizing patient care needs, another important use of such measures are in retrospective quality assurance and follow-up. These measures could for instance be tracked over time allowing us to characterize the performance of our system:
+
+```{r timeseries,fig.height=3,fig.width=7}
+alldata %>%
+  select(starttime,pout,amb_pin) %>%
+  filter(pout %in% c("2A","2B")) %>%
+  select(-pout) %>%
+  mutate(ym = floor_date(starttime, "month")) %>%
+  group_by(ym) %>%
+  dplyr::summarize(pct = mean(amb_pin)) %>%
+  ungroup() %>%
+  ggplot(aes(x=date(ym),
+             y=pct)) +
+  geom_line() +
+  geom_smooth(color = "red") +
+  scale_y_continuous(label = formatpct,
+                     limits = c(0,0.08)) +
+  scale_x_date(date_breaks = "2 months") +
+    theme(axis.text.x = element_text(angle = -45, hjust = 0)) +
+  stdtheme +
+  labs(title = "Calls dispatched priority 2 and transported priority 1",
+       x = "Month",
+       y = "")
+  
+```
+
+We see that by and large, the rate of under-prioritization by this measure remains constant at around 3-4%.
+
+Finally, the protocol for a clinical trial to evaluate the effectiveness of the tool must be finalized. We plan to focus this investigation on low acuity calls, excluding patients determined to be in need of a priority 1 ambulance. In this study we will investigate two dimensions of decisions made by nurses at the EMD center: Whether the patient condition requires an ambulance or can be transported via alternate means to the hospital, and whether the patient condition requires specialist care at a hospital or can be treated within the primary care system. Pending ethics board approval, we plan to perform a fully randomized trial among this cohort of low-acuity patients to investigate whether providing nurses with risk estimates based on these models can lead to improvements in measures of both sensitivity and specificity in the triage process.
