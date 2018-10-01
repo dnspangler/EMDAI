@@ -1,16 +1,30 @@
 ---
-title: "On the development of predictive models for use in Emergency Medical Dispatch centers"
-author: 
-- "Douglas Spangler"
-- "Uppsala University Hospital"
-- "douglas.spangler@akademiska.se"
+title: On the development of predictive models for use in Emergency Medical Dispatch
+  centers
+author:
+- Douglas Spangler
+- Uppsala University Hospital
+- douglas.spangler@akademiska.se
 date: "September 30, 2018"
 output:
   pdf_document: default
+  word_document: default
   html_document: default
+abstract: Triage tools based on Machine Learning offer a promising approach to enhancing
+  the decisional capacity of staff working at Emergency Medical Dispatch centers.
+  There are however many challenges to implementing such systems including the definition
+  of relavant outcomes and patient cohorts, handling issues relating to data quality,
+  and choosing modelling techniques. In a 2 year project funded by the Swedish Agency
+  for Innovation, the Uppsala Ambulance Service aims to develop a machine-learning
+  based tool to augment the current rule-based decision support system. In this analysis,
+  we outline our approach to addressing these challenges, provide a thorough descriptive
+  analysis of the data available for this purpose, and provide a brief report regarding
+  the overall performance of a set of preliminary models based on retrospective data.
+  Overall, our current non-optimized models have a fair predictive value across a
+  broad range of outcomes including ambulance interventions, patient vital signs,
+  and hospital outcomes.
+toc: yes
 urlcolor: blue
-abstract: "Triage tools based on Machine Learning offer a promising approach to enhancing the decisional capacity of staff working at Emergency Medical Dispatch centers. There are however many challenges to implementing such systems including the definition of relavant outcomes and patient cohorts, handling issues relating to data quality, and choosing modelling techniques. In a 2 year project funded by the Swedish Agency for Innovation, the Uppsala Ambulance Service aims to develop a machine-learning based tool to augment the current rule-based decision support system. In this analysis, we outline our approach to addressing these challenges, provide a thorough descriptive analysis of the data available for this purpose, and provide a brief report regarding the overall performance of a set of preliminary models based on retrospective data. Overall, our current non-optimized models have a fair predictive value across a broad range of outcomes including ambulance interventions, patient vital signs, and hospital outcomes. These models compare favorably with other available approaches to predicting patient care needs in our data."
-toc: TRUE
 ---
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE,
@@ -48,9 +62,7 @@ stdtheme <- theme(text = element_text(size = 16))
 
 formatpct <- function(x,dec = 1) round(x*100,dec)
 
-splitpipe <- function(x,n){
-  out <- unlist(strsplit(x, "\\|"))[n]
-}
+# transpose a table and rejigger it
 
 tabletranspose <- function(data){
   x <- t(data)
@@ -60,6 +72,8 @@ tabletranspose <- function(data){
   return(x)
 }
 
+# function to calculate binomial standard error
+
 binomse <- function(x){
   n <- length(x[!is.na(x)])
   est <- mean(x, na.rm = T)
@@ -67,6 +81,8 @@ binomse <- function(x){
   se <- sqrt(var)
   return(se)
 }
+
+# Function to converd Dxy to AUC
 
 dxy2auc <- function(dxy){
  0.5 * (dxy + 1)
@@ -167,6 +183,7 @@ mbs_modsum <- function(data,             # a dataset containing all subsets
                    note = note,
                    stringsAsFactors = F)
          
+         # Update progress
          print(paste("auc",as.numeric(xgbmod$evaluation_log[xgbmod$best_iteration,6]),
                      "aucpr",as.numeric(xgbmod$evaluation_log[xgbmod$best_iteration,8]),
                      "iter",as.numeric(xgbmod$evaluation_log[xgbmod$best_iteration,1])))
@@ -418,24 +435,17 @@ varnames <- c(
  "cr" = "Care need", 
  "crdet" = "Disposition", 
  "crdest" = "Destination", 
- "crcorr" = "Care need (corrected)", 
- "ambtxpcorr" = "", 
- "n" = "", 
- "minmidnight" = "", 
- "recontact" = "", 
- "npin" = "", 
- "pnrsinglevalid" = "", 
- "month" = "", 
- "wkday" = "",
- "eddiag" = "", 
- "carehrs" = "", 
- "daystodeath" = "", 
- "hour" = "", 
- "dead" = "", 
- "daystodeathpos" = "", 
- "daystodeathneg" = "", 
- "recpout" = "Reccomended priority", 
- "recpoutn" = "Reccomended priority", 
+ "crcorr" = "Care need", 
+ "wkday" = "Weekday",
+ "eddiag" = "ED Diagnosis", 
+ "carehrs" = "Hours until discharge", 
+ "daystodeath" = "Days to death", 
+ "hour" = "Contact hour", 
+ "dead" = "Patient died within follow-up", 
+ "daystodeathpos" = "Days to death", 
+ "daystodeathneg" = "Days to death", 
+ "recpout" = "Recommended priority", 
+ "recpoutn" = "Recommended priority", 
  "poutn" = "Dispatched priority",
  "ambptobs" = "Ambulance Interventions",
  "vobs" = "Vital Signs",
@@ -460,7 +470,7 @@ load("180910_fulldata.rda")
 # dataset with follow-up ambulance contacts
 load("180920_alldata.rda")
 
-# Clear non-medical calls and calls prior to August 2016
+# Clear non-medical calls and calls with no disposition data
 alldata <- alldata %>%
   filter(crcorr %in% c("Ambulance need", "No Ambulance care need")) %>%
   mutate(poutref = ifelse(pout == "Referral",
@@ -477,17 +487,17 @@ alldata <- alldata %>%
 `r include_graphics('./cc-by-nc.png')`
 This work is licensed under a [Creative Commons Attribution-NonCommercial 4.0 International License](https://creativecommons.org/licenses/by-nc/4.0/).
 
-Associated [source code](https://github.com/dnspangler/EMDAI/) is licensed under an [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0)
+Associated [source code](https://github.com/dnspangler/EMDAI/) is licensed under a [GNU General Public Licence 3.0](https://www.gnu.org/licenses/gpl-3.0.en.html)
 
 # Introduction
 
 It is the goal of the Uppsala Ambulance Service (UAS) to provide the right resource, to the right patient, at the right time. Given an increasingly frail elderly population often with multiple comorbidities and significant underlying care needs, this can be a difficult goal to achieve without sacrificing patient safety. A high degree of sensitivity is demanded of the ambulance service for emergent conditions necessitating an ambulance response, but given a resource-constrained healthcare system, the need to differentiate between patients with various levels of need is a fact of life.  
 
-The ability of an Emergency Medical Dispatch (EMD) system to differentiate between acute conditions requiring an ambulance, and conditions that are more appropriately treated using other healthcare resources is dependent on a large number of factors. These include a well educated and trained staff, the provision of feedback and robust clinical guidelines, a healthy workplace culture, well-established links with other healthcare providers, and an effective Clinical Decision Support System (CDSS). While this document with deal exclusively with this final point, it should be recognized that the development of CDSS in the absence of efforts to improve other preconditions for delivering high-quality medical decisionmaking in the practice of EMD are likely to be fruitless.  
+The ability of an Emergency Medical Dispatch (EMD) system to differentiate between acute conditions requiring an ambulance, and conditions that are more appropriately treated using other healthcare resources is dependent on a large number of factors. These include a well educated and trained staff, the provision of feedback and robust clinical guidelines, a healthy workplace culture, well-established links with other healthcare providers, and an effective Clinical Decision Support System (CDSS). While this document with deal exclusively with this final point, it should be recognized that the development of CDSS in the absence of efforts to improve other preconditions for delivering high-quality medical decision making in the practice of EMD are likely to be fruitless.  
 
 CDSS have traditionally been based on explicit rules determined based on clinical expertise. Such "expert systems", including the widely utilized [Medical Priority Dispatch System](https://www.emergencydispatch.org/articles/ArticleMPDS%28Cady%29.html), have the advantage of being relatively simple, and have been found to be reasonably effective in identifying specific high-acuity conditions in the context of EMD. This methodology has been extended to to the identification of low-acuity patients in EMD, and thus far these efforts have had some success. [Shah et al. (2005)](https://doi.org/10.1080/10903120590891651) for instance found that a set of "low priority" dispatch codes could be identified which contained at least 90% calls which were not provided with ALS-level care, while [Hinchey et al. (2007)](https://doi.org/10.1080/10903120601021366) found a comparable rate of less than 1%. [Studnek et al. (2012)](https://doi.org/10.3109/10903127.2011.640415) found that among callers triaged to a low acuity dispatch code, 70-75% of patients could be discharged from the emergency department. 
 
-An increasingly popular approach to clinical decision support is the use of predictive models in various forms. Within the domain of emergency medicine, a number of research groups have begun developing machine learning based approaches to triaging patients at the Emergency Department (ED). To describe overall predictive value of predictive models, the machine learning literature tends to refer to the *Area Under the Reciever Operating Characteristics curve* or AUC. This value constitutes a summary of all potential pairs of sensitiviy and specificity afforded by a given model. As implied by it's name, The AUC can be visualized by plotting each possible sensitivity against specificity:
+An increasingly popular approach to clinical decision support is the use of predictive models in various forms. Within the domain of emergency medicine, a number of research groups have begun developing machine learning based approaches to triaging patients at the Emergency Department (ED). To describe overall predictive value of predictive models, the machine learning literature tends to refer to the *Area Under the Reciever Operating Characteristics curve* or AUC. This value constitutes a summary of all potential pairs of sensitivity and specificity afforded by a given model. As implied by it's name, The AUC can be visualized by plotting each possible sensitivity against specificity:
 
 ```{r, fig.width=3,fig.height=3}
 
@@ -518,9 +528,9 @@ ggplot(data = data.frame(roc$curve),
 
 In the plot of randomly generated data above, the black line represents the predictive value of the model - in this case 0.74. Random guessing would result in an AUC of 0.5 and a curve laying flat along the red line, while a model making perfect predictions would have an AUC of 1. From this plot, any given sensitivity can be selected and the corresponding specificity read off - Selecting a sensitivity of 0.9 here results in a specificity of 0.4.
 
-The AUC value provides a useful overall summary, but is also problematic in a number of ways. AUC values will tend to be higher in cases where the outcome is rare, and predictors with fewer levels will have articifially low AUC values. Being a summary, the AUC includes combinations of sensitivity and specificity which may be unimportant clinically. For instance, having anything less than an extremely high degree of sensitivity for cardiac arrests would be unacceptable. While better measures of overall predictive value do exist (the area under a precision-recall curve for instance), for better or worse, AUC is the measure which has become the "industry standard", and which we will report in this analysis.
+The AUC value provides a useful overall summary, but is also problematic in a number of ways. AUC values will tend to be higher in cases where the outcome is rare, and predictors with fewer levels will have artificially low AUC values. Being a summary, the AUC includes combinations of sensitivity and specificity which may be unimportant clinically. For instance, having anything less than an extremely high degree of sensitivity for cardiac arrests would be unacceptable. While better measures of overall predictive value do exist (the area under a precision-recall curve for instance), for better or worse, AUC is the measure which has become the "industry standard", and which we will report in this analysis.
 
-[Levin et al. (2017)](https://doi.org/10.1016/j.annemergmed.2017.08.005) used Random Forest models to achive predictive values of 0.73 - 0.92 AUC for a number of outcomes using data gathered at the time of ED triage. [Hong et al. (2018)](https://doi.org/10.1371/journal.pone.0201016) meanwhile achieved an AUC of 0.92 in the prediction of hospital admission by integrating data from the patient's historical medical records using a number of methods. [Horng et al. (2017)](https://doi.org/10.1371/journal.pone.0174708) used support vector machines to analyze free-text and clinical data, achieving an AUC of 0.86 in detecting diagnosed infections. [Tadahiro et al. (2018)](https://doi.org/10.1016/j.ajem.2018.06.062) were able to achieve AUC values of 0.80 and 0.83 respectively in predicting critical care and admission among Asthma and COPD patients in the ED. 
+[Levin et al. (2017)](https://doi.org/10.1016/j.annemergmed.2017.08.005) used Random Forest models to achieve predictive values of 0.73 - 0.92 AUC for a number of outcomes using data gathered at the time of ED triage. [Hong et al. (2018)](https://doi.org/10.1371/journal.pone.0201016) meanwhile achieved an AUC of 0.92 in the prediction of hospital admission by integrating data from the patient's historical medical records using a number of methods. [Horng et al. (2017)](https://doi.org/10.1371/journal.pone.0174708) used support vector machines to analyze free-text and clinical data, achieving an AUC of 0.86 in detecting diagnosed infections. [Tadahiro et al. (2018)](https://doi.org/10.1016/j.ajem.2018.06.062) were able to achieve AUC values of 0.80 and 0.83 respectively in predicting critical care and admission among Asthma and COPD patients in the ED. 
 
 We are aware of one other effort to apply machine learning methods to the problem of triage at the EMD center, with [Blomberg et al., (2017)](https://bmjopen.bmj.com/content/8/Suppl_1/A9.1) achieving a high degree of accuracy in identifying cardiac arrests using an unspecified methodology. We are also aware of efforts to improve operational aspects of EMD, including the [City of Cininatti](http://www.kdd.org/kdd2017/papers/view/using-machine-learning-to-improve-emergency-medical-dispatch-decisions), and the [Västerbotten EMS depertment](http://www.mynewsdesk.com/se/umea_universitet/pressreleases/stort-anslag-till-forskning-om-flexiblare-ambulanssjukvaard-2507481). We are not aware of any peer-reviewed results in this field thus far however.
 
@@ -558,7 +568,7 @@ Just as outcomes for our patients are multifaceted, so too are the data availabl
 include_graphics('./MBS_dump.png')
 ```
 
-The MBS is structured based on the AMLS triage concept, and consists of several question groups. Three *Initial* questions at the top left of the screen are designed to identify and detect cardiac arrest, and result in an immediate, top-priority ambulance dispatch. Upon completeing the *Initial* questions, dispatchers select a call type, each of which is tied to a base priority; The "General Elderly" call type shown above is for instance has a base priority of Referral. The *ABCDE* questions associated with each call type are designed to rule out acute conditions based on the patient signs and symptoms. This set of questions always follows a yes/no format and often tied to the rule-based triage system, resulting in an adjustment to the priority determination as indicated by the color of the answer buttons. In his case, sine the dispatcher has indicated that the patient has difficulty breathing (Andnöd), the call is upgraded to a lights and sirens response. *Observera* questions are intended to capture additional items important to the triage determination, but which are not tied explicitly to the rule-based determination. *OPQRST* questions are designed to capture details of the patient's condition, while *AMPLE* questions are designed to capture information related to the patient's medical background. Only some of these questions have answers which lead to a change in call priority, and the *OPQRST* and *AMPLE* sections unfortunately have a poor rate of documentation. Additionally, dispatchers lack the ability to document negative findings for these questions, making these data unsuitable for use in predictive models (Nor does inclusion of data from these sections in our models seem to yield improvements in their predictive value). We plan on implementing improvements which will (hopefully) address these issues, but for now, only data from the *ABCDE* group will be used in the context of developing predictive models.
+The MBS is structured based on the AMLS triage concept, and consists of several question groups. Three *Initial* questions at the top left of the screen are designed to identify and detect cardiac arrest, and result in an immediate, top-priority ambulance dispatch. Upon completing the *Initial* questions, dispatchers select a call type, each of which is tied to a base priority; The "General Elderly" call type shown above is for instance has a base priority of Referral. The *ABCDE* questions associated with each call type are designed to rule out acute conditions based on the patient signs and symptoms. This set of questions always follows a yes/no format and often tied to the rule-based triage system, resulting in an adjustment to the priority determination as indicated by the color of the answer buttons. In his case, sine the dispatcher has indicated that the patient has difficulty breathing (Andnöd), the call is upgraded to a lights and sirens response. *Observera* questions are intended to capture additional items important to the triage determination, but which are not tied explicitly to the rule-based determination. *OPQRST* questions are designed to capture details of the patient's condition, while *AMPLE* questions are designed to capture information related to the patient's medical background. Only some of these questions have answers which lead to a change in call priority, and the *OPQRST* and *AMPLE* sections unfortunately have a poor rate of documentation. Additionally, dispatchers lack the ability to document negative findings for these questions, making these data unsuitable for use in predictive models (Nor does inclusion of data from these sections in our models seem to yield improvements in their predictive value). We plan on implementing improvements which will (hopefully) address these issues, but for now, only data from the *ABCDE* group will be used in the context of developing predictive models.
 
 Based on the call type, and modified by the MBS answers, a recommended priority is generated:
 
@@ -610,11 +620,11 @@ fulldata %>%
 
 
 
-We see that missing PINS are highly concentrated among the Non-medical calls. The rate of missingness among patients with a medical complaint but not in need of ambulance care is more satisfactory, though around a quarter of these calls have no associated PIN, and call type documentation rates are still somewhat low! We also see that there are a handful of non-ambulance calls with associated ambulance journals - This typically ocurrs when disatchers mistakenly document the ambulance crew's findings rather than their own determination as the call disposition.
+We see that missing PINS are highly concentrated among the Non-medical calls. The rate of missingness among patients with a medical complaint but not in need of ambulance care is more satisfactory, though around a quarter of these calls have no associated PIN, and call type documentation rates are still somewhat low! We also see that there are a handful of non-ambulance calls with associated ambulance journals - This typically occurs when dispatchers mistakenly document the ambulance crew's findings rather than their own determination as the call disposition.
 
-In order to mitigate dispatcher bias in our models, we also capture cases where patients re-contact with the EMD center or other healthcare providers following the call. We chose a follow-up period of 72 hours for both EMD center re-contacts and healthcare system contacts. If during this time period a patient for whom a valid PIN is captured re-contacts the EMD center, we associate any ambulance interventions from the subsequent contact to the prior contact as well. For health system contacts, the first subsequent contact with the healthcare system within 72 hours, and any associated subsequent contacts (e.g., transfers between wards in a hospital and ED contacts wihtin 6 hours of visitning a primary care facility), asr associated to the call.
+In order to mitigate dispatcher bias in our models, we also capture cases where patients re-contact with the EMD center or other healthcare providers following the call. We chose a follow-up period of 72 hours for both EMD center re-contacts and healthcare system contacts. If during this time period a patient for whom a valid PIN is captured re-contacts the EMD center, we associate any ambulance interventions from the subsequent contact to the prior contact as well. For health system contacts, the first subsequent contact with the healthcare system within 72 hours, and any associated subsequent contacts (e.g., transfers between wards in a hospital and ED contacts within 6 hours of visiting a primary care facility), are associated to the call.
 
-Since we only have this detailed disposition data from August 2016 onwards we will limit our descriptive analysis to calls from that time to the end of 2017, and exclude non-medical calls from our analysis. We can also further divide our referrals into two broad categories: Referrals to alternate transport, and referrals to alternate forms of definitive care. Upon implementing these modifications, the distribution of missingness among the dispatched priorities reveals some interesting patterns:
+Since we only have this detailed disposition data from April 2016 onwards we will limit our descriptive analysis to calls from that time to the end of 2017, and exclude non-medical calls from our analysis. We can also further divide our referrals into two broad categories: Referrals to alternate transport, and referrals to alternate forms of definitive care. Upon implementing these modifications, the distribution of missingness among the dispatched priorities reveals some interesting patterns:
 
 
 
@@ -957,7 +967,7 @@ vdata %>%
     geom_density(adjust = 2, size = 1) +
   facet_wrap(~key, scales = "free") +
   theme(axis.text.y = element_blank(),
-        axis.ticks.y = element_blank())
+        axis.ticks.y = element_blank()) +
   stdtheme
 
 ```
@@ -1018,7 +1028,7 @@ ambdata %>%
   stdtheme
 ```
 
-Taking a broad view of these outcomes, we see some interesting effects - While we by and large see decreasing prevalences of these outcomes along the prioritization scale, for some measures, Priority 1A calls have lower intervention rates than their lower priority counterparts! This could be an artifact of the lower documentation rates among high-acuity calls noted previously. Another factor may be that many Priority 1A calls are in regards to cardiac arrests, an unfortunate percentage of which are found by ambulance crews to be cases of obvious death. Interestingly, we see almost no differentiation between priorities resulting in an ambulance response with regards to transportation rates, though less than half of patients who are initially referred and subsequently recieve an ambulance are transported. We also see that for many markers, Referred patients who later receive an ambulance seem to have lower scores than those receiving an immediate ambulance response.
+Taking a broad view of these outcomes, we see some interesting effects - While we by and large see decreasing prevalences of these outcomes along the prioritization scale, for some measures, Priority 1A calls have lower intervention rates than their lower priority counterparts! This could be an artifact of the lower documentation rates among high-acuity calls noted previously. Another factor may be that many Priority 1A calls are in regards to cardiac arrests, an unfortunate percentage of which are found by ambulance crews to be cases of obvious death. Interestingly, we see almost no differentiation between priorities resulting in an ambulance response with regards to transportation rates, though less than half of patients who are initially referred and subsequently receive an ambulance are transported. We also see that for many markers, Referred patients who later receive an ambulance seem to have lower scores than those receiving an immediate ambulance response.
 
 
 
@@ -1062,11 +1072,11 @@ hospdata %>%
   stdtheme
 ```
 
-Among patients with a healthcare system contact within 72 hours, dispatch priority appears to differentiate for outcomes indicative of an emergent condition such as contact with an ED and ICU care. However, the priority with which an ambulance is dispatched to the scene does not appear to be indicative of other hospital outcomes such as admission to in-patient care or surgical/radiological interventions. Indeed, the need for such longer-term hospital interventions are often not what is being considered when determining ambulance response priority! It is encouraging that for each of these measures, referred patients have the lowest intervention rates, but even a small number of patients for instance recieving ICU care following a referral to alternate care is problematic and must be addressed.
+Among patients with a healthcare system contact within 72 hours, dispatch priority appears to differentiate for outcomes indicative of an emergent condition such as contact with an ED and ICU care. However, the priority with which an ambulance is dispatched to the scene does not appear to be indicative of other hospital outcomes such as admission to in-patient care or surgical/radiological interventions. Indeed, the need for such longer-term hospital interventions are often not what is being considered when determining ambulance response priority! It is encouraging that for each of these measures, referred patients have the lowest intervention rates, but even a small number of patients for instance receiving ICU care following a referral to alternate care is problematic and must be addressed.
 
 ### MBS Recommended priority
 
-In addition to the dispatched priority, we can produce similar comparisons for the dispatch priority recommended by the rule-based MBS. In these charts, we present the above data as divided into three cohorts - Calls where the MBS was used, but the patient was up or downgraded, calls where the MBS reccomended priority was accepted unchanged, and calls where the MBS was unused:
+In addition to the dispatched priority, we can produce similar comparisons for the dispatch priority recommended by the rule-based MBS. In these charts, we present the above data as divided into three cohorts - Calls where the MBS was used, but the patient was up or downgraded, calls where the MBS recommended priority was accepted unchanged, and calls where the MBS was unused:
 
 ```{r ambrecprio}
 ambdata %>%  
@@ -1111,7 +1121,7 @@ vdata %>%
 
 ```
 
-Clearer trends are seen with regards to NEWS scores - While Priority 1A calls do have highler NEWS scores, there is little differentiation among the remainder of the call priorities. Of particular interest is the performance of dispatchers with regards to referred patients. Here the effects found above are quite interesting - Among calls where the MBS priority was followed, NEWS scores among referred patients are similar to priority 2 calls and do not differ between patients referred to alternate care or transport. Among calls where the priority was downgraded by the dispatcher however, calls referred to alternate transport have NEWS scores on par with priority 1 calls, while calls referred to alternate care have far lower NEWS scores - Indeed, there were zero manually downgraded calls where the NEWS score exceeded 7! This could be a sign that features to allow the MBS to differentiate between contiditons requiring transport vs. conditions where a referral to primary care is sufficient would be useful.
+Clearer trends are seen with regards to NEWS scores - While Priority 1A calls do have higher NEWS scores, there is little differentiation among the remainder of the call priorities. Of particular interest is the performance of dispatchers with regards to referred patients. Here the effects found above are quite interesting - Among calls where the MBS priority was followed, NEWS scores among referred patients are similar to priority 2 calls and do not differ between patients referred to alternate care or transport. Among calls where the priority was downgraded by the dispatcher however, calls referred to alternate transport have NEWS scores on par with priority 1 calls, while calls referred to alternate care have far lower NEWS scores - Indeed, there were zero manually downgraded calls where the NEWS score exceeded 7! This could be a sign that features to allow the MBS to differentiate between conditions requiring transport vs. conditions where a referral to primary care is sufficient would be useful.
 
 ```{r hosprecprio}
 
@@ -1189,7 +1199,7 @@ alldata$null_age[alldata$null_age > 109] <- NA
 
 The characteristics and impact of frequent utilizers of EMS services has been widely studied in the literature, including in a study performed previously at our agency [(Spangler, 2017)](http://urn.kb.se/resolve?urn=urn:nbn:se:uu:diva-324317). In line with our previous findings, we see that the relationship of contact frequency with patient acuity is non-linear and non-monotonic. That is to say, acuity appears to increase initially and peak among patients with a few prior contacts, and then decrease to below the acuity levels associated with patients with no prior contacts. With regards to contact time, one can perhaps see an increase in average NEWS scores along with an increase of the overall call volume around 10:00, and a second, weaker peak at around 21:00.
 
-Since these patient characteristics were not included as predictors when imputing missing NEWS scores, we can use the somewhat ideosyncratic distributions to verify that our multiply imputed NEWS values are distributed appropriately:
+Since these patient characteristics were not included as predictors when imputing missing NEWS scores, we can use the somewhat idiosyncratic distributions to verify that our multiply imputed NEWS values are distributed appropriately:
 
 ```{r imputcheck}
 
@@ -1351,7 +1361,7 @@ grid.arrange(ind,cum,ncol = 1)
 
 ```
 
-We see that while there is some gradient which we can exploit, SVD does not result in a small number of variables which can capture a large portion of the overall variability, with individual vectors capturing only fractions of a percent of the variability in the data. Nonetheless, there is some gradient which ccould be exploited - it seems that including the 1000 most predictive singular values for each observation would be a good choice for "denoising" purposes and improving model training times. At this threshold, we retain just over 90% of the variability in the data, while cutting the number of variables we need to include in our models by over half.
+We see that while there is some gradient which we can exploit, SVD does not result in a small number of variables which can capture a large portion of the overall variability, with individual vectors capturing only fractions of a percent of the variability in the data. Nonetheless, there is some gradient which could be exploited - it seems that including the 1000 most predictive singular values for each observation would be a good choice for "denoising" purposes and improving model training times. At this threshold, we retain just over 90% of the variability in the data, while cutting the number of variables we need to include in our models by over half.
 
 # 3) Predictive modelling
 
@@ -1386,7 +1396,7 @@ nulllrm <- lrm(amb_any ~  null_female + hour + wkday + month + null_age + null_p
 print(nulllrm,coefs=F)
 ```
 
-While this model has the benefit of being readily interpretable (coeffiecient estimates are the effect in log-odds of a single unit change in the predictor), it leaves much to be desired. As we saw previously, several of these variables are non-linear, and we need to handle them as such.  
+While this model has the benefit of being readily interpretable (coefficient estimates are the effect in log-odds of a single unit change in the predictor), it leaves much to be desired. As we saw previously, several of these variables are non-linear, and we need to handle them as such.  
 
 A solid choice for handling non-linear predictors is the use of restricted cubic splines; This method essentially generates a fixed point estimate at _k_ intervals along the trimmed range of the variable, and fits a cubic polynomial between these points, while restricting estimates outside of this range to be linear.  For contact hour, assuming linearity is quite silly. Instead, we generate sine and cosine transformations of this variable, and include the interaction between these variables in our model to account for the cyclical nature of the 24 hour period. Furthermore, in exploratory analysis, we found that age and contact time appeared to interact - An important effect which makes sense based on theory and which should be considered in the analysis. It's also reasonable to believe that time will have different effects on weekdays and weekends. Adding these considerations to be model produces the following fit:
 
@@ -1431,7 +1441,7 @@ plot(cal1, main="Original")
 plot(cal2, main="Engineered")
 ```
 
-We see that we've achieved a much improved model calibration as well. Note that crossvalidation can give some wonky results in low-frequency regions as seen above. This model can also tell us something about the risks associated with these predictors:
+We see that we've achieved a much improved model calibration as well. Note that cross-validation can give some wonky results in low-frequency regions as seen above. This model can also tell us something about the risks associated with these predictors:
 
 ```{r nlpreds}
 
@@ -1513,7 +1523,7 @@ print(catnllrm,coefs = F)
 
 We find that we achieve an improved C-index of 0.68 and corresponding increases in measures of model fit. At this point, we should perhaps begin worrying about overfitting - Are we being too confident in our predictions given the large number of predictors? In terms of overall model predictions, we can investigate this using cross validation to estimate the out-of-sample performance, finding a C-index in the test folds of `r round(dxy2auc(validate(catnllrm, method = "crossvalidation", B = 10)[1,3]),3)`, suggesting that overfitting is not yet an issue.
 
-Using this model, we can also investigate the effect of each call type on intervention probability with patient characteristecs controlled for. Given the relatively large number of call types, we should be careful about interpreting individual coefficients however - To limit the number of estimates we present, we can apply a Bonferroni correction, then make it 100 times more extreme (p < 0.000006), and take a look at the odds ratios associated with each call type, using cases where MBS was not used as a comparison group:
+Using this model, we can also investigate the effect of each call type on intervention probability with patient characteristics controlled for. Given the relatively large number of call types, we should be careful about interpreting individual coefficients however - To limit the number of estimates we present, we can apply a Bonferroni correction, then make it 100 times more extreme (p < 0.000006), and take a look at the odds ratios associated with each call type, using cases where MBS was not used as a comparison group:
 
 ```{r catodds}
 c <- data.frame(var = as.factor(names(coef(catnllrm))),coef = coef(catnllrm), se = sqrt(diag(vcov(catnllrm))))
@@ -1619,7 +1629,7 @@ testparams <- alist(data = dat,
 ```
 
 
-To account for interaction effects, colinearity, and other issues which arise as we add increasingly complex forms of data to our set of predictors, we experimented with a number of techniques including random forest models, neural networks, and gradient boosting. While we will provide a comparison of the performance of these techniques in a future publication, it is not the goal of this analysis to determine an optimal modelling methods for use in our data. Rather, we are interested in exploring the general and relative value of our predictors in terms of estimating the likelihood of our outcomes of interest. In this way, we can use predictive models as an exploratory tool to understand the relationships present in our data.
+To account for interaction effects, co-linearity, and other issues which arise as we add increasingly complex forms of data to our set of predictors, we experimented with a number of techniques including random forest models, neural networks, and gradient boosting. While we will provide a comparison of the performance of these techniques in a future publication, it is not the goal of this analysis to determine an optimal modelling methods for use in our data. Rather, we are interested in exploring the general and relative value of our predictors in terms of estimating the likelihood of our outcomes of interest. In this way, we can use predictive models as an exploratory tool to understand the relationships present in our data.
 
 As such, we will limit this analysis to considering the technique we have found to work best: Extreme gradient boosting as implemented in the _xgboost_ package. We've found this methodology to have a number of benefits including good performance on unbalanced datasets, graceful handling of data missing at random, support for GPU computation, and a generally forgiving implementation in R. The method as we use it here involves the use of decision trees which identify splits in the data which are most predictive for the outcome. For instance, a simple tree predicting ambulance interventions based only age and category may look like this:
 
@@ -1648,7 +1658,7 @@ include_graphics('./xgbtree.png')
 
 Following along this tree, we see that it first determines whether this is a chest pain call - If so, it moves downwards and checks the patients age. If the patient's age is 33 or less, the model assigns a value of -0.05, otherwise it assigns a value of 0.33. Otherwise, this tree checks if the call type is difficulty breathing, assigning a value of 0.2, or 0.01 elsewise. A number of similar trees are generated, and the values assigned by each tree are summed to result in a final predicted value. In our case of classification, and additional logistic transformation is applied to the summed predicted values, resulting in a probability between 0 and 1.
 
-Gradient boosting involves training such trees in an iterative process whereby successive trees attempt to further subdivide groups of observations, focusing on cases where residual values are large (i.e., where the previous trees perform poorly). Gradient boosting models are trained through a number of sucessive iterations to improve the fit that these trees produce. The number of such generations a model is to be run, along with a number of other "hyperparameters" such as the maximum depth of trees (2 in the example above), the size of the "steps" taken in each iteration, etc. can be varied to optimize the performance of a specific model. The settings for these are typically determined by examining how changes in these values affect the performance of the model in test data - Data not shown to the model during the training procedure.
+Gradient boosting involves training such trees in an iterative process whereby successive trees attempt to further subdivide groups of observations, focusing on cases where residual values are large (i.e., where the previous trees perform poorly). Gradient boosting models are trained through a number of successive iterations to improve the fit that these trees produce. The number of such generations a model is to be run, along with a number of other "hyperparameters" such as the maximum depth of trees (2 in the example above), the size of the "steps" taken in each iteration, etc. can be varied to optimize the performance of a specific model. The settings for these are typically determined by examining how changes in these values affect the performance of the model in test data - Data not shown to the model during the training procedure.
 
 We used the bootstrap to evaluate this for our logistic regression models, and we'll use a similar technique called cross-validation for these gradient boosting models. Note that we will for the purposes of this analysis not be performing final hyperparameter tuning - Rather, we will report models based on the default settings of xgboost, with the exception of adding a drop-out procedure to control over-fitting in lieu of a more sophisticated approach. For illustrative purposes here, we will train each model for 100 iterations.
 
@@ -1701,11 +1711,11 @@ We can see that a the patient's age was the most important predictor, followed b
 
 ### Adding data
 
-Using gradient boosting, we can begin to explore the predictive value of our other datasets. We can plot similar training logs for models containing each of the sets of predictors noted in section 2. In addition to the call and patient characteristics (What we call out "Null" predictors) and call types, we also add the answers to the MBS questions, coded using -1 for a negative, anwer, 1 for a positive answer, and 0 for a missing answer.
+Using gradient boosting, we can begin to explore the predictive value of our other datasets. We can plot similar training logs for models containing each of the sets of predictors noted in section 2. In addition to the call and patient characteristics (What we call out "Null" predictors) and call types, we also add the answers to the MBS questions, coded using -1 for a negative answer, 1 for a positive answer, and 0 for a missing answer.
 
-In analysinzg text data, we've found that documentation practices vary from nurse to nurse at the EMD center, and taking consideration for which particular nurse is documenting the call appears to improve the predictive value of the free text data. We include this effect by generating dummy variables for each operator with more than 50 calls taken, and include it alongside the bag-of-words model described earlier. Finally, we include all of these predictors in a final model:
+In analyzing text data, we've found that documentation practices vary from nurse to nurse at the EMD center, and taking consideration for which particular nurse is documenting the call appears to improve the predictive value of the free text data. We include this effect by generating dummy variables for each operator with more than 50 calls taken, and include it alongside the bag-of-words model described earlier. Finally, we include all of these predictors in a final model:
 
-```{r xgbmbs}
+```{r xgbadd}
 
 
 dat <- moddata[ambptobs,predcols$null]
@@ -1762,7 +1772,7 @@ ggplot(aes(x=iter,
 
 ```
 
-We see that each additional predictor adds value to the model. We see that for the simpler models, gradient boosting quickly maximizes it's ability to predict the outcome, with additonal iterations only increasing the training AUC. For others, additional training interations could lead to small gains in cross-validated performance.
+We see that each additional predictor adds value to the model. We see that for the simpler models, gradient boosting quickly maximizes it's ability to predict the outcome, with additional iterations only increasing the training AUC. For others, additional training iterations could lead to small gains in cross-validated performance.
 
 ### Model summaries
 
@@ -2120,11 +2130,11 @@ as.data.frame(Effect(c("pout"),t)) %>%
        x= "",y = "Percent with admission (Age Adjusted)", fill = "Priority")
 ```
 
-With regards to our predictive models, we found a number of interesting effects. It can be seen that the bulk of the predictive value of the models are drawn from the patient characteristics and call type documented by the nurse. While adding MBS question data and text data does increase the predictive value somewhat in the majority of cases, the value added is marginal. This could be due to a number of reasons - Documentation compleness of the MBS leaves something to be desired, while our text data is rife with spelling errors and ideosyncratic terminology and abbreviations. We plan on addressing these data quality issues as we move forwards, and additional text pre-processing could improve the yield of this unstructured data.  Interestingly, it seems that cases where text data tends towards overfitting are outcomes where there is a high degree of discretion on the part of ambulance crews - e.g., whether to drive priority 1 to the hospital, the documentation of a "critical" patient in the ambulance record, and perhaps even whether to initiate CPR. It is also almost certainly the case that we have not yet identified the optimal methods for modelling the data, and a few more percentage points of AUC can likely be garnered by tuning model hyperparameters. 
+With regards to our predictive models, we found a number of interesting effects. It can be seen that the bulk of the predictive value of the models are drawn from the patient characteristics and call type documented by the nurse. While adding MBS question data and text data does increase the predictive value somewhat in the majority of cases, the value added is marginal. This could be due to a number of reasons - Documentation completeness of the MBS leaves something to be desired, while our text data is rife with spelling errors and idiosyncratic terminology and abbreviations. We plan on addressing these data quality issues as we move forwards, and additional text pre-processing could improve the yield of this unstructured data.  Interestingly, it seems that cases where text data tends towards overfitting are outcomes where there is a high degree of discretion on the part of ambulance crews - e.g., whether to drive priority 1 to the hospital, the documentation of a "critical" patient in the ambulance record, and perhaps even whether to initiate CPR. It is also almost certainly the case that we have not yet identified the optimal methods for modelling the data, and a few more percentage points of AUC can likely be garnered by tuning model hyperparameters. 
 
-The overall predictive value of our models based on dispatch data is lower than that found in models based on data gathered at the ED. This is unsurprising, given that information based on visually observing or pysically interacting with the patient are typically unavailable at the time of ambulance dispatch. While [Hong et al. (2018)](https://doi.org/10.1371/journal.pone.0201016) achieved an impressive AUC of 0.92 for hospital admission, while we achieved an AUC of .75 using only data from the EMD center, and 0.77 upon including data from the ambulance. [Levin et al. (2017)](https://doi.org/10.1016/j.annemergmed.2017.08.005) on the other hand achieved an AUC of 0.82-0.84 for hospital admission, much closer to the results found here. Given this range of predictive values, it seems uncertain as to what an "acceptable" level of differentiation in this context is. While we had hoped for AUCs on the order of 0.8, lower levels of predictive value could be compensated for by sacrificing specificity (AKA over-triaging) in order to ensure the safety of decisions made based on model predictions.
+The overall predictive value of our models based on dispatch data is lower than that found in models based on data gathered at the ED. This is unsurprising, given that information based on visually observing or physically interacting with the patient are typically unavailable at the time of ambulance dispatch. While [Hong et al. (2018)](https://doi.org/10.1371/journal.pone.0201016) achieved an impressive AUC of 0.92 for hospital admission, while we achieved an AUC of .75 using only data from the EMD center, and 0.77 upon including data from the ambulance. [Levin et al. (2017)](https://doi.org/10.1016/j.annemergmed.2017.08.005) on the other hand achieved an AUC of 0.82-0.84 for hospital admission, much closer to the results found here. Given this range of predictive values, it seems uncertain as to what an "acceptable" level of differentiation in this context is. While we had hoped for AUCs on the order of 0.8, lower levels of predictive value could be compensated for by sacrificing specificity (AKA over-triaging) in order to ensure the safety of decisions made based on model predictions.
 
-While the models were able to out-perform triage determinations with regards to hospital outcomes and vital signs, they struggled to do so for many ambulance-based indicators of patient acuity. This suggests that these models may be able to deliver the most value to nurses in terms of assessing longer-term care needs, with the rule-based system sufficing to identify conditions necessitating an emergency ambulance response. It is also interesting to note that in every case, actual dispatched priorities outperformed MBS reccomended priorities in terms of predictive value. However, it may also be noted that in many cases where patients have been inappropriately referred to non-emergency care, the MBS rules would have reccomended a higher priority. This illustrates the point that improved accuracy could be undesireable if it comes at the cost of patient safety!
+While the models were able to out-perform triage determinations with regards to hospital outcomes and vital signs, they struggled to do so for many ambulance-based indicators of patient acuity. This suggests that these models may be able to deliver the most value to nurses in terms of assessing longer-term care needs, with the rule-based system sufficing to identify conditions necessitating an emergency ambulance response. It is also interesting to note that in every case, actual dispatched priorities outperformed MBS recommended priorities in terms of predictive value. However, it may also be noted that in many cases where patients have been inappropriately referred to non-emergency care, the MBS rules would have recommended a higher priority. This illustrates the point that improved accuracy could be undesirable if it comes at the cost of patient safety!
 
 ## Further development
 
