@@ -5,7 +5,7 @@ author:
 - Douglas Spangler
 - Uppsala University Hospital
 - douglas.spangler@akademiska.se
-date: "September 30, 2018"
+date: "October 2, 2018"
 output:
   pdf_document: default
   word_document: default
@@ -22,7 +22,7 @@ abstract: Triage tools based on Machine Learning offer a promising approach to e
   the overall performance of a set of preliminary models based on retrospective data.
   Overall, our current non-optimized models have a fair predictive value across a
   broad range of outcomes including ambulance interventions, patient vital signs,
-  and hospital outcomes.
+  and hospital outcomes. We also provide an online tool for exploring our free-text data.
 toc: yes
 urlcolor: blue
 ---
@@ -488,6 +488,11 @@ alldata <- alldata %>%
 This work is licensed under a [Creative Commons Attribution-NonCommercial 4.0 International License](https://creativecommons.org/licenses/by-nc/4.0/).
 
 Associated [source code](https://github.com/dnspangler/EMDAI/) is licensed under a [GNU General Public Licence 3.0](https://www.gnu.org/licenses/gpl-3.0.en.html)
+  
+  
+**External resources:**
+
+[Online Freetext Explorer](https://dnspangler.shinyapps.io/EMD_text_explorer/) - [(source code)](https://github.com/dnspangler/EMDAI/blob/master/freetext_explorer.R)
 
 # Introduction
 
@@ -1309,7 +1314,7 @@ wr <- filter(wordratios, ct == "cat_Trauma", out == "amb_immob")
 
 As might be expected, words like "neck" "neck pain", "bicycle","km" (suggestive of the involvement of a vehicle), etc., are associated with immobilization. Terms like "hip", "floor", "several", "dementia", are at the lower end of the word cloud, suggesting that falls in the home are less likely to receive immobilization. Interestingly, the majority of terms lay above the red line, denoting a higher prevalence among immobilized patients. Perhaps more documentation is produced with regards to these more "serious" trauma patients?
 
-We implemented this methodology in an exploratory analysis tool for each of the outcomes reported in the previous sections within each of our call types with more than 1000 occurrences (for a total of 22 call types). Unfortunately, we have not translated the terms to English, but we encourage readers with some knowledge of Swedish to explore our data! An on-line version of the tool is available here:
+We implemented this methodology in an exploratory analysis tool for each of the outcomes reported in the previous sections within each of our call types with more than 1000 occurrences (for a total of 22 call types). Unfortunately, we have not translated the terms to English, but we encourage readers with some knowledge of Swedish to explore our data! An on-line version of the tool is hosted at [shinyapps.io](https://dnspangler.shinyapps.io/EMD_text_explorer/).
 
 The source code (and the aggregated data the visualization is based on) is available on [Github](https://github.com/dnspangler/EMDAI/blob/master/freetext_explorer.R).
 
@@ -1920,7 +1925,7 @@ ggplot(filter(modsum, note %in% c("vobs","hospptobs"), method == "xgb"),
   stdtheme
 ```
 
-Each indicator improves steadily with the addition of additional predictors, with the exception of 3 day mortality which deos not appear to improve with the addition of free-text questions.. Recall that AUC is sensitive to unbalance in datasets (i.e., having large numbers of negative cases improves AUC), and as such, comparisons between outcomes here are unreliable.
+Each indicator improves steadily with the addition of additional predictors, with the exception of 3 day mortality which does not appear to improve with the addition of free-text questions.. Recall that AUC is sensitive to unbalance in datasets (i.e., having large numbers of negative cases improves AUC), and as such, comparisons between outcomes here are unreliable.
 
 ### Comparative analysis
 
