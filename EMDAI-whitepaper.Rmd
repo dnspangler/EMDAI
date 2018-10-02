@@ -30,7 +30,7 @@ urlcolor: blue
 knitr::opts_chunk$set(echo = FALSE,
                       warning = FALSE,
                       message = FALSE,
-                      cache = TRUE,
+                      cache = FALSE,
                       fig.width = 10,
                       fig.height = 5,
                       fig.align = "center",
@@ -465,10 +465,10 @@ varnames <- data.frame(pretty = varnames,
                        stringsAsFactors = F)
 
 # dataset without follow-up ambulance contacts
-load("180910_fulldata.rda")
+load("181002_fulldata.rda")
 
 # dataset with follow-up ambulance contacts
-load("180920_alldata.rda")
+load("181002_alldata.rda")
 
 # Clear non-medical calls and calls with no disposition data
 alldata <- alldata %>%
@@ -661,7 +661,7 @@ alldata %>%
 
 
 
-We see two effects in terms of documentation completeness: Higher acuity calls appear to have lower rates of documentation completeness, as do referred calls, and especially calls referred to alternate care. Upon including re-contacts within 72 hours, we see that around 6% of referred calls among both referrals to alternate transport and alternate care receive an ambulance within this time frame. We see that 75-80% of calls with a captured PIN have an associated health system contact within 72 hours, while patients transported by ambulance to one of the two regional emergency departments (Uppsala University hospital or Enköping hospital). The extent to which this is problematic in terms of predictive modelling is largely determined by the extent to which this loss is randomly distributed across the population.
+We see two effects in terms of documentation completeness: Higher acuity calls appear to have lower rates of documentation completeness, as do referred calls, and especially calls referred to alternate care. Upon including re-contacts within 72 hours, we see that around 6% of referred calls among both referrals to alternate transport and alternate care receive an ambulance within this time frame. We see that 75-80% of calls with a captured PIN have an associated health system contact within 72 hours, while patients transported by ambulance to one of the two regional emergency departments (Uppsala University hospital or Enköping hospital) with a valid PIN have a match rate of 90-95%. The extent to which this is problematic in terms of predictive modelling is largely determined by the extent to which this loss is randomly distributed across the population.
 
 Beyond simply the ability to link records, we must also consider the completeness of the documentation from our dispatch center, our ambulance journals, and our hospital data. For ambulance data, the correctness of these data can only be checked via manual quality assurance of our data - A process which is ongoing, but has thus far shown satisfactory results, with both ambulance interventions and hospital outcomes ranging from 88% to 100% accuracy compared to a human reviewer (n = 100 so far), with one outlier at 70% due to hospitals not including flat x-rays as a radiological intervention. For our MBS questions and vital signs however, we can investigate data missingness directly by examining the percentage of ABCDE MBS Questions and vital signs that have documented values:
 
@@ -1296,8 +1296,8 @@ wr <- filter(wordratios, ct == "cat_Trauma", out == "amb_immob")
     ggplot(wr, aes(`0`, `1`)) +
       geom_text(aes(label = term), size = 4, check_overlap = T,
                 position = position_jitter(height = 0.01)) +
-      scale_x_log10(labels = formatpct) +
-      scale_y_log10(labels = formatpct) +
+      scale_x_log10(labels = function(x)formatpct(x,dec=4)) +
+      scale_y_log10(labels = function(x)formatpct(x,dec=4)) +
       geom_abline(color = "red") +
       scale_color_manual(values = c("black","red"), guide=FALSE) +
       labs(title = "Immobilization in Trauma calls", 
@@ -1311,13 +1311,13 @@ As might be expected, words like "neck" "neck pain", "bicycle","km" (suggestive 
 
 We implemented this methodology in an exploratory analysis tool for each of the outcomes reported in the previous sections within each of our call types with more than 1000 occurrences (for a total of 22 call types). Unfortunately, we have not translated the terms to English, but we encourage readers with some knowledge of Swedish to explore our data! An on-line version of the tool is available here:
 
-The source code (and the aggregated data the visualization is based on) is available on Github.
+The source code (and the aggregated data the visualization is based on) is available on [Github](https://github.com/dnspangler/EMDAI/blob/master/freetext_explorer.R).
 
 #### Dimension reduction
 
 Given a dataset containing over 2200 distinct terms, dimensionality reduction techniques may be useful in identifying underlying commonalities between terms. Firstly, a reduced dataset results in lower training times and more responsive predictions when developing predictive models. Dimensionality reduction can also serve to remove "noise" from the dataset, and result in lower levels of over-fitting and can address co-linearity issues.  Finally, the resulting reduced dataset representing underlying commonalities between terms could potentially improve model interpretability if the resulting vectors can be given meaning via human review.
 
-Here, we implement Singular Value Decomposition for these data. This process involves performing a factorization resulting in a set of three matrices containing a reversible decomposition of the original data. This decomposition results in a set of singular values ordered by the percentage of variance they capture, some subset of which may be retained to capture a portion of the variance found in the original data while reducing the number of variables. A full explanation of Singular Value Decomposition is beyond the scope of this paper, but some resources we found useful may be found here: [Intuition](http://www.ams.org/publicoutreach/feature-column/fcarc-svd) [Theory](http://web.mit.edu/be.400/www/SVD/Singular_Value_Decomposition.htm) 
+Here, we implement Singular Value Decomposition for these data. This process involves performing a factorization resulting in a set of three matrices containing a reversible decomposition of the original data. This decomposition results in a set of singular values ordered by the percentage of variance they capture, some subset of which may be retained to capture a portion of the variance found in the original data while reducing the number of variables. A full explanation of Singular Value Decomposition is beyond the scope of this paper, but some resources we found useful may be found here: [Intuition](http://www.ams.org/publicoutreach/feature-column/fcarc-svd), [Theory](http://web.mit.edu/be.400/www/SVD/Singular_Value_Decomposition.htm) ,
 [Implementation](http://genomicsclass.github.io/book/pages/svd.html)
 
 We first calculated the term frequency / inverse document frequency value for each term occurrence, and transformed the data to conform to produce bag of words model. We then applied SVD, and present below two visualizations of the ordered singular values of d, corresponding to the percentage of variability in the data explained by each value, and the equivalent cumulative sum och these percentages:
@@ -1618,7 +1618,7 @@ testparams <- alist(data = dat,
                     rate_drop = 0.2,
                     nrounds = 100,
                     maximize = T,
-                    max_depth = 2,
+                    max_depth = 2, # This get changed to 6
                     nfold = 5,
                     verbose = F,
                     prediction = T,
@@ -1711,7 +1711,7 @@ We can see that a the patient's age was the most important predictor, followed b
 
 ### Adding data
 
-Using gradient boosting, we can begin to explore the predictive value of our other datasets. We can plot similar training logs for models containing each of the sets of predictors noted in section 2. In addition to the call and patient characteristics (What we call out "Null" predictors) and call types, we also add the answers to the MBS questions, coded using -1 for a negative answer, 1 for a positive answer, and 0 for a missing answer.
+Using gradient boosting, we can begin to explore the predictive value of our other datasets. We can plot similar training logs for models containing each of the sets of predictors noted in section 2. In addition to the call and patient characteristics (What we call our "Null" predictors) and call types, we also add the answers to the MBS questions, coded using -1 for a negative answer, 1 for a positive answer, and 0 for a missing answer.
 
 In analyzing text data, we've found that documentation practices vary from nurse to nurse at the EMD center, and taking consideration for which particular nurse is documenting the call appears to improve the predictive value of the free text data. We include this effect by generating dummy variables for each operator with more than 50 calls taken, and include it alongside the bag-of-words model described earlier. Finally, we include all of these predictors in a final model:
 
@@ -1781,7 +1781,7 @@ With an understanding of how these models are generated, let's have a look at ho
 ```{r ambsum}
 
           # Train models for each set of predictors/outcomes
-# modsum <- rbind(
+# modsum <- rbind(modsum,
 #           mbs_modsum(data = moddata,
 #                       obs = ambptobs,
 #                       cols = predcols[3:5],
@@ -1794,15 +1794,15 @@ With an understanding of how these models are generated, let's have a look at ho
 #                       outs = outcols[[2]],
 #                       methods = "xgb",
 #                       note = "vobs"),
-#            mbs_modsum(data = moddata,
-#                       obs = hospptobs,
-#                       cols = predcols[3:5],
-#                       outs = outcols[[3]],
-#                       methods = "xgb",
-#                       note = "hospptobs"))
+           # mbs_modsum(data = moddata,
+           #            obs = hospptobs,
+           #            cols = predcols[3:5],
+           #            outs = outcols[[3]],
+           #            methods = "xgb",
+           #            note = "hospptobs"))
 # 
 #           # Save predictions of full models for further analysis
-# modsum <- rbind(#modsum,
+# modsum <- rbind(modsum,
 #           mbs_modsum(data = moddata,
 #                       obs = ambptobs,
 #                       cols = predcols[7],
@@ -1817,13 +1817,13 @@ With an understanding of how these models are generated, let's have a look at ho
 #                       preds = T,
 #                       methods = "xgb",
 #                       note = "vobs"),
-#            mbs_modsum(data = moddata,
-#                       obs = hospptobs,
-#                       cols = predcols[7],
-#                       outs = outcols[[3]],
-#                       preds = T,
-#                       methods = "xgb",
-#                       note = "hospptobs"))
+           # mbs_modsum(data = moddata,
+           #            obs = hospptobs,
+           #            cols = predcols[7],
+           #            outs = outcols[[3]],
+           #            preds = T,
+           #            methods = "xgb",
+           #            note = "hospptobs"))
 # 
 #            # Calculate AUC for reccomended and actual priorities
 # modsum <- rbind(modsum,
@@ -1861,9 +1861,9 @@ With an understanding of how these models are generated, let's have a look at ho
 #                       preds = T,
 #                       methods = "xgb",
 #                       note = "txpobs"))
-# modsum <- filter(modsum, !dat == "")
-
-load("180921_modsum.rda")
+#  modsum <- filter(modsum, !dat == "")
+# save(modsum, file = "181002_modsum.rda")
+load("181002_modsum.rda")
 
 modsum$dat <- factor(prettyname(modsum$dat), 
                      levels = c("Null",
@@ -1920,7 +1920,7 @@ ggplot(filter(modsum, note %in% c("vobs","hospptobs"), method == "xgb"),
   stdtheme
 ```
 
-Each indicator improves steadily with the addition of additional predictors, with the exception of 3 day mortality which improves considerably upon the addition of text data, but does not suggest improvement by the addition of MBS questions. Recall that AUC is sensitive to unbalance in datasets (i.e., having large numbers of negative cases improves AUC), and as such, comparisons between outcomes here are unreliable.
+Each indicator improves steadily with the addition of additional predictors, with the exception of 3 day mortality which deos not appear to improve with the addition of free-text questions.. Recall that AUC is sensitive to unbalance in datasets (i.e., having large numbers of negative cases improves AUC), and as such, comparisons between outcomes here are unreliable.
 
 ### Comparative analysis
 
@@ -1933,79 +1933,79 @@ recpoutobs <- which(!is.na(alldata$recpoutalln))
 
 
 
-# recpoutsum <- rbind(mbs_modsum(data = moddata,
-#                       obs = intersect(ambptobs,recpoutobs),
-#                       cols = predcols[1:2],
-#                       outs = outcols[[1]],
-#                       methods = "auc",
-#                       note = "ambptobs"),
-#                      mbs_modsum(data = moddata,
-#                       obs = intersect(vobs,recpoutobs),
-#                       cols = predcols[1:2],
-#                       outs = outcols[[2]],
-#                       methods = "auc",
-#                       note = "vobs"),
-#                      mbs_modsum(data = moddata,
-#                       obs = intersect(hospptobs,recpoutobs),
-#                       cols = predcols[1:2],
-#                       outs = outcols[[3]],
-#                       methods = "auc",
-#                       note = "hospptobs"),
-#                     
-#                     mbs_modsum(data = moddata,
-#                       obs = intersect(ambptobs,recpoutobs),
-#                       cols = predcols[7],
-#                       outs = outcols[[1]],
-#                       methods = "xgb",
-#                       note = "ambptobs"),
-#                     mbs_modsum(data = moddata,
-#                       obs = intersect(vobs,recpoutobs),
-#                       cols = predcols[7],
-#                       outs = outcols[[2]],
-#                       methods = "xgb",
-#                       note = "vobs"),
-#                     mbs_modsum(data = moddata,
-#                       obs = intersect(hospptobs,recpoutobs),
-#                       cols = predcols[7],
-#                       outs = outcols[[3]],
-#                       methods = "xgb",
-#                       note = "hospptobs"),
-#                     
-#                     mbs_modsum(data = moddata,
-#                       obs = intersect(txpobs,recpoutobs),
-#                       cols = predcols[c(1:2,9)],
-#                       outs = outcols[[3]][-1],
-#                       methods = "auc",
-#                       note = "txpobs"),
-#                     
-#                     mbs_modsum(data = moddata,
-#                       obs = intersect(txpobs,recpoutobs),
-#                       cols = predcols[c(7,8)],
-#                       outs = outcols[[3]][-1],
-#                       methods = "xgb",
-#                       note = "txpobs"))
-# 
+ # recpoutsum <- rbind(mbs_modsum(data = moddata,
+ #                      obs = intersect(ambptobs,recpoutobs),
+ #                      cols = predcols[1:2],
+ #                      outs = outcols[[1]],
+ #                      methods = "auc",
+ #                      note = "ambptobs"),
+ #                     mbs_modsum(data = moddata,
+ #                      obs = intersect(vobs,recpoutobs),
+ #                      cols = predcols[1:2],
+ #                      outs = outcols[[2]],
+ #                      methods = "auc",
+ #                      note = "vobs"),
+ #                     mbs_modsum(data = moddata,
+ #                      obs = intersect(hospptobs,recpoutobs),
+ #                      cols = predcols[1:2],
+ #                      outs = outcols[[3]],
+ #                      methods = "auc",
+ #                      note = "hospptobs"),
+ # 
+ #                    mbs_modsum(data = moddata,
+ #                      obs = intersect(ambptobs,recpoutobs),
+ #                      cols = predcols[7],
+ #                      outs = outcols[[1]],
+ #                      methods = "xgb",
+ #                      note = "ambptobs"),
+ #                    mbs_modsum(data = moddata,
+ #                      obs = intersect(vobs,recpoutobs),
+ #                      cols = predcols[7],
+ #                      outs = outcols[[2]],
+ #                      methods = "xgb",
+ #                      note = "vobs"),
+ #                    mbs_modsum(data = moddata,
+ #                      obs = intersect(hospptobs,recpoutobs),
+ #                      cols = predcols[7],
+ #                      outs = outcols[[3]],
+ #                      methods = "xgb",
+ #                      note = "hospptobs"),
+ # 
+ #                    mbs_modsum(data = moddata,
+ #                      obs = intersect(txpobs,recpoutobs),
+ #                      cols = predcols[c(1:2,9)],
+ #                      outs = outcols[[3]][-1],
+ #                      methods = "auc",
+ #                      note = "txpobs"),
+ # 
+ #                    mbs_modsum(data = moddata,
+ #                      obs = intersect(txpobs,recpoutobs),
+ #                      cols = predcols[c(7,8)],
+ #                      outs = outcols[[3]][-1],
+ #                      methods = "xgb",
+ #                      note = "txpobs"))
+
 # recpoutsum <- filter(recpoutsum, !dat == "")
-# recpoutsum$dat <- factor(recpoutsum$dat, 
-#                      levels = c("null", 
-#                                 "cat", 
-#                                 "mbs", 
-#                                 "alldisp", 
-#                                 "allamb", 
-#                                 "recpout", 
-#                                 "pout", 
+# recpoutsum$dat <- factor(recpoutsum$dat,
+#                      levels = c("null",
+#                                 "cat",
+#                                 "mbs",
+#                                 "alldisp",
+#                                 "allamb",
+#                                 "recpout",
+#                                 "pout",
 #                                 "news"))
 # recpoutsum$note <- factor(recpoutsum$note,
 #                      levels = c("ambptobs",
 #                                 "vobs",
 #                                 "hospptobs",
 #                                 "txpobs"))
-# save(recpoutsum,file = "180923_recpoutsum.rda")
+# save(recpoutsum,file = "181002_recpoutsum.rda")
 
-load("180923_recpoutsum.rda")
+load("181002_recpoutsum.rda")
 
 recpoutsum$dat <- factor(prettyname(recpoutsum$dat), 
-                     levels = c("Reccomended priority", 
+                     levels = c("Recommended priority", 
                                 "Dispatched Priority", 
                                 "NEWS score",
                                 "Null", 
@@ -2084,7 +2084,7 @@ ggplot(aes(x = prettyname(lab),
 
 ```
 
-We see that with the exception of 3-day morality, the dispatch data based model outperforms NEWS, with the model containing predictors from the ambulance journal performing better still, with perhaps a slightly higher predictive than NEWS for 3-day mortality. Interestingly, while NEWS has a good predictive value for mortality, it performs less well in terms of predicting for instance admission and ICU treatment.
+We see that with the exception of 3-day morality, the dispatch data based model outperforms NEWS, with the model containing predictors from the ambulance journal performing better still, outperforming NEWS scores in terms of 3-day mortality as well. Interestingly, while NEWS has a good predictive value for mortality, it performs less well in terms of predicting for instance admission and ICU treatment.
 
 # 4) Discussion
 
