@@ -19,7 +19,7 @@ urlcolor: blue
 knitr::opts_chunk$set(echo = FALSE,
                       warning = FALSE,
                       message = FALSE,
-                      cache = TRUE,
+                      cache = FALSE,
                       fig.width = 10,
                       fig.height = 5,
                       fig.align = "center",
@@ -485,7 +485,7 @@ An increasingly popular approach to clinical decision support is the use of pred
 
 ```{r, fig.width=3,fig.height=3}
 
-# Generate some random correlatd data
+# Generate some random correlated data
 library(MASS)
 mu <- rep(0,2)
 Sigma <- matrix(.5, nrow=2, ncol=2) + diag(2)*.5
