@@ -1133,7 +1133,7 @@ ggplot(aes(x = value, y = news)) +
          geom_jitter(width = 0.5, height = 0.5,size = 0.5, alpha=I(0.4)) + 
   geom_smooth(color = "red") + 
   facet_grid(imputed ~ prettyname(key), scales = "free_x") +
-  labs(x = "Patient Age",
+  labs(x = "",
        y = "NEWS Score")
 ```
 Looks pretty good! We see that many of the features of the original NEWS scores with regards to age are preserved.
@@ -1473,7 +1473,7 @@ testparams <- alist(data = dat,
                     label = lab, 
                     booster = "dart",
                     rate_drop = 0.2,
-                    nrounds = 200,
+                    nrounds = 100,
                     maximize = T,
                     max_depth = 2, # This gets changed to 6
                     nfold = 10,
