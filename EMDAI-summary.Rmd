@@ -1,0 +1,486 @@
+---
+title: "Whitepaper summary"
+author:
+- Douglas Spangler
+- Uppsala University Hospital,
+- Uppsala Center for Prehospital Research
+- douglas.spangler@akademiska.se
+date: "October 13, 2018"
+output: html_document
+---
+
+This document summarizes the findings of a white paper published as part of a two year project funded by the Swedish Agency for Innovation at the Uppsala Ambulance Service to develop predictive models for use at the Emergency Dispatch Center.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      warning = FALSE,
+                      message = FALSE,
+                      cache = FALSE,
+                      fig.width = 12)
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(knitr)
+library(huxtable)
+
+formatpct <- function(x,dec = 1) round(x*100,dec)
+
+tabletranspose <- function(data){
+  x <- t(data)
+  colnames(x) <- x[1,]
+  x <- x[-1,]
+  x <- as.data.frame(x)
+  return(x)
+}
+
+# make a pallete of olors corresponding to dispatch priorities
+poutpal <- c("#FF0000","#FFA600","#FFFF00","#00FF00","#0000FF","#FF00FF")
+
+poutmap <- c("Unused","Referral","2B","2A","1B","1A")
+
+# Define out-of-regon destinations
+
+oordest <- c("Gävle Sjukhus",
+             "Västerås Sjukhus",
+             "Karolinska Sjukhus",
+             "Örebro Sjukhus", 
+             "Stockholm", 
+             "Eskilstuna Sjukhus",
+             "Avesta Sjukhus", 
+             "Köping Sjukhus", 
+             "Lindesberg Sjukhus", 
+             "Falun Sjukhus", 
+             "Falu Lasarett")
+
+# Define pretty variable names
+
+prettyname <- function(x,vn = varnames,mod = F){
+  
+  if(mod){
+    vn <- vn[,-2]
+  }else{
+    vn <- vn[,-3]
+  }
+  
+  if(length(x) == 1){
+    
+    o <- vn[which(vn[,2] == x),1]
+    
+  }else{
+    
+    o <- sapply(x, function(y){
+      vn[which(vn[,2] == y),1]
+      
+    })
+  }
+  
+  return(as.character(unname(o)))
+  
+}
+
+varnames <- c(
+ "caseid" = "Case ID",
+ "null_age" = "Patient Age", 
+ "null_female" = "Female gender", 
+ "null_pcontacts" = "Number of prior contacts", 
+ "null_lastcontact" = "Days since last contact", 
+ "null_wkday" = "Weekday", 
+ "null_time_sin" = "Contact Time (sin transformed)",
+ "null_time_cos" = "Contact Time (cos transformed)",
+ "null_month_sin" = "Contact Month (sin transformed)",
+ "null_month_cos" = "Contact Month (cos transformed)",
+ "amb_ambtxp" = "Ambulance transport", 
+ "amb_meds" = "Medications administered", 
+ "amb_pin" = "Lights & sirens\nto hospital", 
+ "amb_o2" = "Supplemental oxygen", 
+ "amb_ekgtx" = "EKG transmitted to hospital", 
+ "amb_gauze" = "Bleeding control/bandages applied", 
+ "amb_iv" = "IV placed", 
+ "amb_immob" = "Spine/joint immobilization", 
+ "amb_cpr" = "CPR administered by crew", 
+ "amb_crit" = "Patient documented as critical", 
+ "amb_alert" = "Pre-arrival notification given", 
+ "amb_any" = "Any intervention\nprovided", 
+ "v_br" = "Breathing rate", 
+ "v_spo2" = "Capillary oxygen saturation", 
+ "v_pr" = "Pulse rate", 
+ "v_bp" = "Systolic blood pressure", 
+ "v_temp" = "Temperature", 
+ "v_avpu" = "AVPU", 
+ "v_gcs" = "Glasgow Coma Scale",
+ "news" = "NEWS score", 
+ "news_hi" = "NEWS score > 7", 
+ "news_lo" = "NEWS score > 4",
+ "hosp_ed" = "Patient treated at ED", 
+ "hosp_admit" = "Patient admitted\nto ward", 
+ "hosp_icu" = "Patient treated\nat ICU", 
+ "hosp_radio" = "CT scan performed", 
+ "hosp_op" = "Surgical intervention", 
+ "hosp_dead3day" = "3-day mortality", 
+ "cat_Allergisk reaktion" = "Allergic Reaction", 
+ "cat_Allmän barn" = "General Child", 
+ "cat_Allmän vuxen" = "General Adult", 
+ "cat_Allmän åldring" = "General Elderly", 
+ "cat_Andningsbesvär" = "Difficulty Breathing", 
+ "cat_Annat" = "Other", 
+ "cat_Arm-, bensymtom (ej trauma)" = "Arm/leg sympoms (non-traumatic)", 
+ "cat_Blod i urin" = "Blood in urine", 
+ "cat_Blodig upphostning" = "Blood in cough", 
+ "cat_Blodsocker lågt" = "Low Blood sugar", 
+ "cat_Brand" = "Fire", 
+ "cat_Brännskada" = "Burn", 
+ "cat_Bröstsmärta" = "Chest pain", 
+ "cat_Buk-, flanksmärta" = "Abdominal/flank pain", 
+ "cat_CBRN" = "CBRN", 
+ "cat_Diarré" = "Diarrhea", 
+ "cat_Drunkningstillbud" = "Drowning", 
+ "cat_Dykeriolycka" = "Diving accident", 
+ "cat_Elektrisk skada" = "Electical injury", 
+ "cat_Feber" = "Fever", 
+ "cat_Flygolycka" = "Aircraft accident", 
+ "cat_Förlossning" = "Childbirth", 
+ "cat_Förvirring" = "Confusion", 
+ "cat_Graviditet" = "Pregnancy", 
+ "cat_Hallucination" = "Hallucination", 
+ "cat_Halsont" = "Sore throat", 
+ "cat_Hjärtstopp" = "Cardiac arrest", 
+ "cat_Huvudvärk" = "Headache", 
+ "cat_Hypotermi" = "Hypothermia", 
+ "cat_ICD" = "ICD", 
+ "cat_Illamående" = "Nausea", 
+ "cat_Infektion" = "Infection", 
+ "cat_Intox/förgiftning" = "Intoxication", 
+ "cat_Kramper" = "Convulsions", 
+ "cat_Kräkning" = "Vomiting", 
+ "cat_Köldskada" = "Cold injury", 
+ "cat_Luftvägsbesvär" = "Airway problems", 
+ "cat_Mag-, tarmblödning" = "Stomach/Intestinal bleeding", 
+ "cat_Näs-, svalgblödning" = "Nose/Throat bleeding", 
+ "cat_Ormbett" = "Snake bite", 
+ "cat_Pacemaker" = "Pacemaker", 
+ "cat_Planerad" = "Planned",
+ "cat_Psykiska besvär" = "Psychiatic problems", 
+ "cat_Ryggsmärta" = "Back pain", 
+ "cat_Rytmrubbning" = "Cardiac arythmia", 
+ "cat_Rökexponering" = "Smoke exposure", 
+ "cat_Saknas" = "MBS Unused", 
+ "cat_Sensoriskt-, motoriskt bortfall" = "Sensory/motor deficiency", 
+ "cat_Sjöolycka" = "Maritime accident", 
+ "cat_Stroke" = "Stroke", 
+ "cat_Svimning" = "Fainting", 
+ "cat_Sårskada" = "Minor truama", 
+ "cat_Sänkt vakenhet" = "Reduced Consciousness", 
+ "cat_Trafikolycka" = "Traffic accident", 
+ "cat_Trauma" = "Trauma", 
+ "cat_Urinkateterstopp" = "Urinary catheter blockage", 
+ "cat_Urinstämma" = "Urinary retention", 
+ "cat_Urogenitala besvär" = "Urogenital problems", 
+ "cat_Vaginal blödning" = "Vaginal bleeding", 
+ "cat_Våld-hot-suicidhot" = "Violence/threats/Suicide", 
+ "cat_Yrsel" = "Dizziness", 
+ "cat_Ögon" = "Eye problems", 
+ "freetext" = "", 
+ "operator" = "", 
+ "starttime" = "", 
+ "pnrvalid" = "", 
+ "pnrage" = "", 
+ "pnrfemale" = "", 
+ "pout" = "Dispatched Priority", 
+ "closereason" = "", 
+ "calltype" = "", 
+ "ambj" = "", 
+ "export" = "", 
+ "cosmicj" = "", 
+ "catpn" = "", 
+ "recpoutncat" = "", 
+ "recpoutalln" = "MBS priority (numeric)", 
+ "recpoutall" = "MBS priority", 
+ "cr" = "Care need", 
+ "crdet" = "Disposition", 
+ "crdest" = "Destination", 
+ "crcorr" = "Care need", 
+ "wkday" = "Weekday",
+ "eddiag" = "ED Diagnosis", 
+ "carehrs" = "Hours until discharge", 
+ "daystodeath" = "Days to death", 
+ "hour" = "Contact hour", 
+ "dead" = "Patient died within follow-up", 
+ "daystodeathpos" = "Days to death", 
+ "daystodeathneg" = "Days to death", 
+ "recpout" = "MBS priority", 
+ "recpoutn" = "MBS priority", 
+ "poutn" = "Dispatched priority",
+ "ambptobs" = "Ambulance",
+ "vobs" = "Vitals",
+ "hospptobs" = "Hospital",
+ "txpobs" = "ED Transports",
+ "null" = "Null", 
+ "cat" = "Call Types", 
+ "mbs" = "MBS", 
+ "alldisp" = "Dispatch data", 
+ "allamb" = "Ambulance data",
+ "train_auc_mean" = "Mean Training AUROC",
+ "test_auc_mean" = "Mean Test AUROC")
+
+varnames <- data.frame(pretty = varnames,
+                       orig = names(varnames),
+                       mod = make.names(names(varnames)),
+                       stringsAsFactors = F)
+
+# dataset with follow-up ambulance contacts
+load("181002_alldata.rda")
+
+# Model summaries
+load("181002_recpoutsum.rda")
+
+# Clear non-medical calls and calls with no disposition data
+alldata <- alldata %>%
+  filter(crcorr %in% c("Ambulance need", "No Ambulance care need"),
+         as.Date(starttime) > as.Date("2016-08-01")) %>%
+  mutate(poutref = ifelse(pout == "Referral",
+                       ifelse(crdet %in% c("Hänvisning till annat transportsätt",
+                                           "Hänvisning till sjukresa",
+                                           "Annat transportsätt",
+                                           "Sjukresa"),
+                         "Alt. txp",
+                         "Alt. care"),
+                       as.character(pout))) %>%
+  mutate(poutref = factor(poutref,levels = c("1A", "1B", "2A", "2B", "Alt. txp", "Alt. care")))
+
+# Define cohorts
+
+# All calls with a PIN documented
+pinobs <- which(alldata$export == 1)
+
+# Only ambulance records (For descriptive analysis)
+ambobs <- which(alldata$ambj == 1)
+
+# Only hospital records (For descriptive analysis)
+hospobs <- which(alldata$cosmicj == 1)
+
+# Records with a valid PIN or ambulance record
+ambptobs <- which(alldata$ambj == 1 |
+                  alldata$pnrvalid)
+
+# Ambulance records missing >= 2 vital signs in NEWS
+vobs <- which(!is.na(alldata$news) & # Multiply imputed
+              # Apply age criteria
+              alldata$null_age >= 18 &
+              alldata$null_age <= 100) 
+
+# Records with documented and exported PINs which can be followed up
+hospptobs <- which(alldata$export == 1 &
+                  !(alldata$amb_ambtxp == 1 &
+                    alldata$cosmicj == 0) &
+                  !(alldata$crdest %in% oordest))
+
+# Only ambulance transports to an ED
+txpobs <- which(alldata$amb_ambtxp == 1 &
+                alldata$hosp_ed == 1 &
+                !is.na(alldata$news))
+
+# ambdata <- alldata[ambobs,] %>%
+#   dplyr::select(starts_with("amb_"),poutref, recpoutall, pout) %>%
+#          mutate(changed = ifelse(recpoutall == "Unused","Unused",
+#                           ifelse(recpoutall == pout,"Unchanged","Changed"))) %>%
+#   gather(key = "key", value = "value", starts_with("amb_")) %>%
+#   mutate(key = prettyname(key),
+#          group = "Ambulance") %>%
+#   ungroup()
+# 
+# vdata <- alldata[vobs,] %>%
+#   dplyr::select(starts_with("v_"),starts_with("news"),amb_o2,poutref,recpoutall,pout) %>%
+#          mutate(changed = ifelse(recpoutall == "Unused","Unused",
+#                           ifelse(recpoutall == pout,"Unchanged","Changed"))) %>%
+#   gather(key = "key", value = "value", starts_with("v_"), starts_with("news"), amb_o2) %>%
+#   mutate(key = prettyname(key),
+#          group = "Vitals")
+# 
+# hospdata <- alldata[hospobs,] %>%
+#   dplyr::select(starts_with("hosp_"),poutref, recpoutall,pout) %>%
+#          mutate(changed = ifelse(recpoutall == "Unused","Unused",
+#                           ifelse(recpoutall == pout,"Unchanged","Changed"))) %>%
+#   gather(key = "key", value = "value", starts_with("hosp_")) %>%
+#   mutate(key = prettyname(key),
+#          group = "Hospital") %>%
+#   ungroup()
+# 
+# allmeasures <- bind_rows(ambdata,vdata,hospdata)
+# 
+# save(allmeasures,file = "allmeasures.rda")
+
+load("allmeasures.rda")
+
+```
+
+## Data quality
+
+```{r quality}
+       t <- alldata %>%
+         group_by(poutref) %>%
+         dplyr::summarize(`Total calls (%)` = paste0(n(),
+                                                     "<br>(", formatpct(n()/nrow(alldata)), ")"),
+                          `PIN captured (%)` = paste0(sum(export),
+                                                           "<br>(", formatpct(mean(export)), ")"),
+                          `MBS Used (%)` = paste0(sum(1-cat_Saknas),
+                                                  "<br>(", formatpct(1-mean(cat_Saknas)), ")"),
+                          `Ambulance<br>Journals (%)` = paste0(sum(ambj),
+                                                            "<br>(", formatpct(mean(ambj)), ")"),
+                          `Journals Missing<br><= 2 vitals (%)` = paste0(sum(!is.na(news)),
+                                                            "<br>(", 
+                                                            formatpct(mean(ifelse(ambj == 1,                                                                                           !is.na(news),
+                                                                                  NA
+                                                                                  ),
+                                                                           na.rm = T)), ")"),
+                          `PINs with<br>hospital record (%)` = 
+                            paste0(sum(ifelse(export,cosmicj,NA),na.rm = T),
+                                   "<br>(", formatpct(mean(ifelse(export,cosmicj,NA),na.rm = T)), ")"),
+                          `ED transport with<br>hospital record (%)` = 
+                            paste0(sum(ifelse(amb_ambtxp & export &
+                                                (crdest %in% c("Uppsala Akademiska", 
+                                                               "Enköpings Sjukhus")),
+                                              cosmicj,NA),na.rm = T),
+                                   "<br>(", formatpct(mean(ifelse(amb_ambtxp & export &
+                                                                 (crdest %in% c("Uppsala Akademiska", 
+                                                                                "Enköpings Sjukhus")),
+                                                               cosmicj,NA),na.rm = T)), ")")) %>%
+         tabletranspose() 
+
+Total <- alldata %>%
+  dplyr::summarize(`Total calls (%)` = paste0(n(),
+                                                     "<br>(", formatpct(n()/nrow(alldata)), ")"),
+                          `PIN captured (%)` = paste0(sum(export),
+                                                           "<br>(", formatpct(mean(export)), ")"),
+                          `MBS Used (%)` = paste0(sum(1-cat_Saknas),
+                                                  "<br>(", formatpct(1-mean(cat_Saknas)), ")"),
+                          `Ambulance<br>Journals (%)` = paste0(sum(ambj),
+                                                            "<br>(", formatpct(mean(ambj)), ")"),
+                          `Journals Missing<br><= 2 vitals (%)` = paste0(sum(!is.na(news)),
+                                                            "<br>(", 
+                                                            formatpct(mean(ifelse(ambj == 1,                                                                                           !is.na(news),
+                                                                                  NA
+                                                                                  ),
+                                                                           na.rm = T)), ")"),
+                          `PINs with<br>hospital record (%)` = 
+                            paste0(sum(ifelse(export,cosmicj,NA),na.rm = T),
+                                   "<br>(", formatpct(mean(ifelse(export,cosmicj,NA),na.rm = T)), ")"),
+                          `ED transport with<br>hospital record (%)` = 
+                            paste0(sum(ifelse(amb_ambtxp & export &
+                                                (crdest %in% c("Uppsala Akademiska", 
+                                                               "Enköpings Sjukhus")),
+                                              cosmicj,NA),na.rm = T),
+                                   "<br>(", formatpct(mean(ifelse(amb_ambtxp & export &
+                                                                 (crdest %in% c("Uppsala Akademiska", 
+                                                                                "Enköpings Sjukhus")),
+                                                               cosmicj,NA),na.rm = T)), ")")) %>%
+         t()
+
+tab <- cbind(t,Total)
+
+t <- tab %>%
+  as_hux() %>%
+  add_colnames() %>%
+  add_rownames() %>%
+  set_background_color(odds, everywhere, "white") %>% 
+  set_background_color(evens, everywhere, grey(.9)) %>% 
+  set_background_color(1, everywhere, c("#FFFFFF",poutpal,"#FFFFFF")) %>%
+  set_font_size(14)
+
+bold(t)[1,] <- T
+bold(t)[,c(1,ncol(t))] <- T
+
+t[1,1] <- ""
+
+bottom_border(t)[c(1,4,6), ] <- 1
+
+align(t)[,-1] <- "center"
+valign(t) <- "middle"
+
+right_padding(t) <- 10
+left_padding(t)  <- 10
+top_padding(t) <- 5
+bottom_padding(t) <- 5
+escape_contents(t) <- FALSE
+
+t
+
+```
+
+## Prioritization
+
+```{r prios, fig.height=7}
+
+vars <- c("Lights & sirens\nto hospital",
+          "Any intervention\nprovided",
+          "NEWS score > 7",
+          "Patient admitted\nto ward",
+          "Patient treated\nat ICU",
+          "3-day mortality")
+
+p <- filter(allmeasures,
+            key %in% vars) %>%
+  mutate(key = as.factor(key),
+         group = factor(group, levels = c("Ambulance", "Vitals", "Hospital")))
+
+  ggplot(p, aes(x = key, y = value)) +
+  geom_bar(aes(fill = poutref), stat = "summary", position = "dodge") +
+  geom_errorbar(aes(group = poutref), 
+                stat = "summary", 
+                position = position_dodge(width = 0.9), 
+                width = 0.5) +
+  scale_fill_manual(values = poutpal) +
+  scale_y_continuous(breaks = seq(0,1,0.2),
+                     labels = formatpct) +
+  theme(axis.text.x = element_text(angle = -45, hjust = 0),
+        panel.grid.major.x = element_blank(),
+        text = element_text(size = 20)) +
+  labs(title = "Outcomes by dispatched priority",
+       x= "",y = "Prevalence (%)", fill = "Priority") +
+  facet_grid(~group, scales = "free_x", space = "free_x")
+```
+
+# Prediction
+
+```{r preds, fig.height=7}
+
+allpreds <- recpoutsum %>%
+  select(dat,lab,max_test_auc,max_test_auc_std,note) %>%
+  filter(prettyname(lab) %in% vars) %>%
+  mutate(lab = factor(prettyname(lab), levels = vars))
+  
+allpreds$dat <- factor(prettyname(allpreds$dat), 
+                     levels = c("MBS priority", 
+                                "Dispatched Priority", 
+                                "Null", 
+                                "Call Type",
+                                "Dispatch data",
+                                "NEWS score",
+                                "Ambulance data"))
+
+allpreds$note <- factor(prettyname(allpreds$note), 
+                     levels = c("Ambulance", "Vitals", "Hospital", "ED Transports"))
+
+filter(allpreds) %>%
+ggplot(aes(x = lab, 
+           y = max_test_auc,
+           ymin = max_test_auc - max_test_auc_std/sqrt(10),
+           ymax = max_test_auc + max_test_auc_std/sqrt(10), 
+           fill = dat)) + 
+  geom_bar(stat = "identity",
+           position = "dodge") +
+  geom_errorbar(stat = "identity",
+                width = 0.5,
+           position = position_dodge(width = 0.9)) +
+  coord_cartesian(ylim = c(0.4,1))  +
+  theme(axis.text.x = element_text(angle = -45, hjust = 0),
+        panel.grid.major.x = element_blank(),
+        text = element_text(size = 20)) +
+  labs(title = "Test AUROC by Outcome and Predictor", 
+       x = "", y = "AUROC",fill = "Predictors") +
+  facet_grid(~ note, scales = "free_x", space = "free_x")
+```
+
+This work is licensed under a [Creative Commons Attribution-NonCommercial 4.0 International License](https://creativecommons.org/licenses/by-nc/4.0/).
+
+Associated [source code](https://github.com/dnspangler/EMDAI/) is licensed under a [GNU General Public Licence 3.0](https://www.gnu.org/licenses/gpl-3.0.en.html)
