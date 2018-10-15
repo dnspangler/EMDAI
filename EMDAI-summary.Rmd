@@ -1,16 +1,22 @@
 ---
-title: "Whitepaper summary"
+title: "On the development of predictive models for use in Emergency Medical Dispatch
+  centers"
 author:
 - Douglas Spangler
-- Uppsala University Hospital,
-- Uppsala Center for Prehospital Research
+- Uppsala University Hospital, Uppsala Center for Prehospital Research
 - douglas.spangler@akademiska.se
 date: "October 13, 2018"
-output: html_document
+output:
+  html_document: default
+  pdf_document: default
 ---
+  
+  
+This work is licensed under a [Creative Commons Attribution-NonCommercial 4.0 International License](https://creativecommons.org/licenses/by-nc/4.0/).
 
-This document summarizes the findings of a white paper published as part of a two year project funded by the Swedish Agency for Innovation at the Uppsala Ambulance Service to develop predictive models for use at the Emergency Dispatch Center.
-
+Associated [source code](https://github.com/dnspangler/EMDAI/) is licensed under a [GNU General Public Licence 3.0](https://www.gnu.org/licenses/gpl-3.0.en.html)
+  
+  
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE,
                       warning = FALSE,
@@ -23,6 +29,7 @@ library(tidyr)
 library(ggplot2)
 library(knitr)
 library(huxtable)
+library(pROC)
 
 formatpct <- function(x,dec = 1) round(x*100,dec)
 
@@ -34,8 +41,8 @@ tabletranspose <- function(data){
   return(x)
 }
 
-# make a pallete of olors corresponding to dispatch priorities
-poutpal <- c("#FF0000","#FFA600","#FFFF00","#00FF00","#0000FF","#FF00FF")
+# make a pallete of colors corresponding to dispatch priorities
+poutpal <- c("#FF0000","#FFA600","#FFFF00","#00FF00","#2020FF","#FF00FF")
 
 poutmap <- c("Unused","Referral","2B","2A","1B","1A")
 
@@ -218,8 +225,8 @@ varnames <- c(
  "null" = "Null", 
  "cat" = "Call Types", 
  "mbs" = "MBS", 
- "alldisp" = "Dispatch data", 
- "allamb" = "Ambulance data",
+ "alldisp" = "XGB model - Dispatch", 
+ "allamb" = "XGB model - Ambulance",
  "train_auc_mean" = "Mean Training AUROC",
  "test_auc_mean" = "Mean Test AUROC")
 
@@ -280,6 +287,8 @@ txpobs <- which(alldata$amb_ambtxp == 1 &
                 alldata$hosp_ed == 1 &
                 !is.na(alldata$news))
 
+# Generate descriptive datasets
+
 # ambdata <- alldata[ambobs,] %>%
 #   dplyr::select(starts_with("amb_"),poutref, recpoutall, pout) %>%
 #          mutate(changed = ifelse(recpoutall == "Unused","Unused",
@@ -312,9 +321,126 @@ txpobs <- which(alldata$amb_ambtxp == 1 &
 
 load("allmeasures.rda")
 
+vars <- c("Any intervention\nprovided",
+          "Lights & sirens\nto hospital",
+          "NEWS score > 7",
+          "Patient admitted\nto ward",
+          "Patient treated\nat ICU",
+          "3-day mortality")
+
+# Generate Predictive datasets
+
+# ambdata <- alldata[ambptobs,] %>%
+#   dplyr::select(starts_with("amb_"),poutref, recpoutall, pout) %>%
+#          mutate(changed = ifelse(recpoutall == "Unused","Unused",
+#                           ifelse(recpoutall == pout,"Unchanged","Changed"))) %>%
+#   gather(key = "key", value = "value", starts_with("amb_")) %>%
+#   mutate(key = prettyname(key),
+#          group = "Ambulance") %>%
+#   ungroup()
+# 
+# vdata <- alldata[vobs,] %>%
+#   dplyr::select(starts_with("v_"),starts_with("news"),amb_o2,poutref,recpoutall,pout) %>%
+#          mutate(changed = ifelse(recpoutall == "Unused","Unused",
+#                           ifelse(recpoutall == pout,"Unchanged","Changed"))) %>%
+#   gather(key = "key", value = "value", starts_with("v_"), starts_with("news"), amb_o2) %>%
+#   mutate(key = prettyname(key),
+#          group = "Vitals")
+# 
+# hospdata <- alldata[hospptobs,] %>%
+#   dplyr::select(starts_with("hosp_"),poutref, recpoutall,pout) %>%
+#          mutate(changed = ifelse(recpoutall == "Unused","Unused",
+#                           ifelse(recpoutall == pout,"Unchanged","Changed"))) %>%
+#   gather(key = "key", value = "value", starts_with("hosp_")) %>%
+#   mutate(key = prettyname(key),
+#          group = "Hospital") %>%
+#   ungroup()
+
+# allpredmeasures <- bind_rows(ambdata,vdata,hospdata)
+# 
+# save(allpredmeasures,file = "allpredmeasures.rda")
+
+load("allpredmeasures.rda")
+
+txpdata <- alldata[intersect(vobs,txpobs),] %>%
+  dplyr::select(starts_with("hosp_"),poutref, recpoutall,pout,news) %>%
+         mutate(changed = ifelse(recpoutall == "Unused","Unused",
+                          ifelse(recpoutall == pout,"Unchanged","Changed"))) %>%
+  gather(key = "key", value = "value", starts_with("hosp_")) %>%
+  mutate(key = prettyname(key),
+         group = "ED Transports") %>%
+  ungroup()
+
+
+
+rocs <- allpredmeasures %>%
+  filter(key %in% vars,
+         recpoutall != "Unused") %>%
+  mutate(pout = 6-as.numeric(pout),
+         recpoutall = 6-as.numeric(recpoutall)) %>%
+  gather(key = "dat",value = "predval", recpoutall, pout) %>%
+  group_by(key,dat,group) %>%
+  summarize(max_test_auc = roc(value,predval)$auc,
+            max_test_auc_se = sqrt(var(roc(value,predval)))) %>%
+  ungroup() %>%
+  mutate(dat = prettyname(dat))
+
+txprocs <- txpdata %>%
+  filter(key %in% vars,
+         recpoutall != "Unused") %>%
+  mutate(pout = 6-as.numeric(pout),
+         recpoutall = 6-as.numeric(recpoutall)) %>%
+  gather(key = "dat",value = "predval", recpoutall, pout,news) %>%
+  group_by(key,dat,group) %>%
+  summarize(max_test_auc = roc(value,predval)$auc,
+            max_test_auc_se = sqrt(var(roc(value,predval)))) %>%
+  ungroup() %>%
+  mutate(dat = prettyname(dat))
+
+rocs <- bind_rows(rocs,txprocs) %>%
+  mutate(lab = key) %>%
+  select(-key)
+
+allpreds <- recpoutsum %>%
+  select(dat,lab,max_test_auc,max_test_auc_std,note) %>%
+  filter(prettyname(lab) %in% vars) %>%
+  mutate(lab = factor(prettyname(lab), levels = vars),
+         group = prettyname(note),
+         dat = prettyname(dat),
+         # SE = Standard deviation / sqrt of number of test folds
+         max_test_auc_se = max_test_auc_std/sqrt(10)) %>%
+  left_join(.,rocs, by = c("dat", "lab","group")) %>%
+  mutate(max_test_auc = coalesce(max_test_auc.x,max_test_auc.y),
+         max_test_auc_se = coalesce(max_test_auc_se.x,max_test_auc_se.y)) %>%
+  select(dat,lab,max_test_auc,max_test_auc_se,group) %>%
+  mutate(dat = factor(dat, 
+                     levels = c("MBS priority", 
+                                "Dispatched Priority", 
+                                "Null", 
+                                "Call Type",
+                                "XGB model - Dispatch",
+                                "NEWS score",
+                                "XGB model - Ambulance")),
+         group = factor(group, 
+                     levels = c("Ambulance", "Vitals", "Hospital", "ED Transports")),
+         lab = factor(lab,levels = vars))
+
+
 ```
 
+# Summary
+
+This document summarizes the findings of a [white paper](https://github.com/dnspangler/EMDAI/blob/master/EMDAI-whitepaper.pdf?raw=true) published as part of a two year project funded by the Swedish Agency for Innovation at the Uppsala Ambulance Service to develop predictive models for use at the Emergency Dispatch Center. In this summary, we present:  
+
+1) A set of key data quality indicators which represent the main sources of missingness in our data, which must be minimized if valid predictive models are to be developed, finding that missingness is associated with patient acuity, with both high and low priority calls having higher rates of missing data.
+
+2) A selection of measures chosen from among the 19 measures presented in the white paper, representing important aspects of patient care needs with regards to Ambulance interventions, Vital signs, and Hospital outcomes, finding that dispatchers achieve the highest rates of differentiation with regards to measures of pre-hospital and in-hospital acute care.
+
+3) A summary of the performance of the existing rule-based decision support system (MBS), actual dispatched priorities, and our preliminary models with regards to predicting the occurrence of the measures presented above. We find that our models are likely to provide the most value to dispatchers in predicting measures of sub-acute care.
+
 ## Data quality
+
+Below, we present figures for data collected at the Uppsala Ambulance Service from August 1, 2016 - December 31, 2017. Records were searched to link ambulance and hospital journals based on the patient's Personal Identification Number (PIN), and these figures include re-contacts within 72 hours. Non-medical calls (e.g., stand-bys and misdirected calls) and inter-facility transports are excluded:
 
 ```{r quality}
        t <- alldata %>%
@@ -385,7 +511,7 @@ t <- tab %>%
   set_background_color(odds, everywhere, "white") %>% 
   set_background_color(evens, everywhere, grey(.9)) %>% 
   set_background_color(1, everywhere, c("#FFFFFF",poutpal,"#FFFFFF")) %>%
-  set_font_size(14)
+  set_font_size(12)
 
 bold(t)[1,] <- T
 bold(t)[,c(1,ncol(t))] <- T
@@ -407,20 +533,25 @@ t
 
 ```
 
+We see that the bulk of calls (about two thirds) are "medium priority" 1B/2A calls, while only a small percentage are of the highest or lowest priority. About 20% of calls are referred to either alternate forms of transport or alternate forms of definitive care.
+
+PINs were captured in 92% of calls, though capture rates are lower among high-priority and referred calls. A similar pattern emerges upon considering the use of the decision support system, which was used in 88% of calls.
+
+An ambulance record could be linked to the EMD center contact for 90-95% of calls with a priority indicating an ambulance response (missing records could be due either to technical/documentation errors or cases where no patient is found). In 6% of referred calls, an ambulance journal was found for the patient within 72 hours. We could calculate a [NEWS score](https://www.england.nhs.uk/ourwork/clinical-policy/sepsis/nationalearlywarningscore/) for 90% of ambulance records, using multiple imputation to estimate scores for records missing 2 or fewer of the included vital signs.
+
+Among ambulance responses, we could identify a corresponding hospital record in 80% of cases, of which we suspect roughly half is due to patients being left at the scene of the incident, and half due to technical errors. Among patients transported to the ED (for whom there definitely should be a hospital record), we find a successful linkage rate for patients with a PIN of 90-95%.
+
+Among all of these measures, we see a trend whereby both high and low acuity calls have more missingness than medium-acuity calls. Such non-random missingness must be carefully considered by researchers in pre-hospital care - If records with missing data are simply excluded from studies in prehospital care, bias will be introduced!
+
 ## Prioritization
+
+Below, we report the distribution of 6 key measures of patient care need within our calls as they are currently dispatched. We report here the prevalence of the measure among calls with a relevant record (calls referred to alternate care with no subsequent healthcare contact are not included in the denominator for instance):
 
 ```{r prios, fig.height=7}
 
-vars <- c("Lights & sirens\nto hospital",
-          "Any intervention\nprovided",
-          "NEWS score > 7",
-          "Patient admitted\nto ward",
-          "Patient treated\nat ICU",
-          "3-day mortality")
-
 p <- filter(allmeasures,
             key %in% vars) %>%
-  mutate(key = as.factor(key),
+  mutate(key = factor(key, levels = vars),
          group = factor(group, levels = c("Ambulance", "Vitals", "Hospital")))
 
   ggplot(p, aes(x = key, y = value)) +
@@ -440,32 +571,24 @@ p <- filter(allmeasures,
   facet_grid(~group, scales = "free_x", space = "free_x")
 ```
 
-# Prediction
+In this analysis, we tracked 12 interventions provided by ambulance crews (e.g., medication administration, immobilization, IV insertion, etc.), and among priority 1 calls, such an intervention was provided in 75% of calls. Among priority 2 calls, these were provided in 50-60% of calls, while among calls referred to alternate care or transport, interventions were provided in 22% of cases where there was an ambulance contact within 72 hours. There was a high degree of differentiation with regards to the use of lights and sirens while transporting the patient to the hospital, though this could partially by due to ambulance crew determination being influenced by the dispatcher's prioritization.
 
+We see that each dispatched priority has a successively lower proportion of patients with NEWS scores over 7, a cutoff commonly used to denote high risk patients in the literature. Referred patients with subsequent ambulance responses do not seem to have lower scores, though these proportions are unreliable given the data quality issues among these patients noted above.
+
+We see that dispatcher prioritization is a poor predictor of hospital admission, with priority 2 patients having perhaps even higher admission rates than priority 1 patients. With regards to ICU treatment however, the predictive value of EMD prioritization is better, with the highest priority patients seeing ICU treatment rates of 18%, while a handful of referred patients experienced this outcome. Upwards of 10% of priority 1A patients died within 72 hours, while this outcome was very rare among the other patient groups.
+
+While dispatched priorities displayed could differentiate robustly among most measures, dispatched priority was less predictive for measures indicative of sub-acute care needs such as hospital admission. While only a small number of patients referred to alternate care were treated at an ICU (including intermediate care units) or died within 3 days, even a small number of errors among these patients is unacceptable, and we are reviewing all calls in these categories (ICU = 12, Deaths = 2).
+
+## Prediction
+
+While the ability to measure the clinical quality of the decisions we make at the EMD center is useful in and of itself, it is the goal of the project to develop predictive models to give our dispatch nurses insight into the likelihood of these outcomes occurring for individual patients at the point of care. To do this, we created a dataset containing patient demographics, the time of contact, frequency of previous contacts, call types, answers provided in the current decision support system, and free-text notes written by dispatchers. These were analyzed using a tree-based machine learning algorithm called [Extreme Gradient Boosting](https://doi.org/10.1145/2939672.2939785) (XGB). Below, we summarize the performance of our preliminary models using a common measure of discriminatory ability called the [Area Under a Reciever Operating Characteristics](https://en.wikipedia.org/wiki/Receiver_operating_characteristic) curve - AUROC or C-index for short. Note that while we included only calls with a relevant journal in the descriptive analysis above, here we include referred patients with valid PINs. We compare the performance of our models with the theoretical predictive value of the recommended priority of the MBS, and the actual dispatched priority in predicting the outcome:
 ```{r preds, fig.height=7}
 
-allpreds <- recpoutsum %>%
-  select(dat,lab,max_test_auc,max_test_auc_std,note) %>%
-  filter(prettyname(lab) %in% vars) %>%
-  mutate(lab = factor(prettyname(lab), levels = vars))
-  
-allpreds$dat <- factor(prettyname(allpreds$dat), 
-                     levels = c("MBS priority", 
-                                "Dispatched Priority", 
-                                "Null", 
-                                "Call Type",
-                                "Dispatch data",
-                                "NEWS score",
-                                "Ambulance data"))
-
-allpreds$note <- factor(prettyname(allpreds$note), 
-                     levels = c("Ambulance", "Vitals", "Hospital", "ED Transports"))
-
-filter(allpreds) %>%
+filter(allpreds, group != "ED Transports") %>%
 ggplot(aes(x = lab, 
            y = max_test_auc,
-           ymin = max_test_auc - max_test_auc_std/sqrt(10),
-           ymax = max_test_auc + max_test_auc_std/sqrt(10), 
+           ymin = max_test_auc - max_test_auc_se,
+           ymax = max_test_auc + max_test_auc_se, 
            fill = dat)) + 
   geom_bar(stat = "identity",
            position = "dodge") +
@@ -473,14 +596,45 @@ ggplot(aes(x = lab,
                 width = 0.5,
            position = position_dodge(width = 0.9)) +
   coord_cartesian(ylim = c(0.4,1))  +
+  scale_fill_brewer(palette = "Set1") +
   theme(axis.text.x = element_text(angle = -45, hjust = 0),
         panel.grid.major.x = element_blank(),
         text = element_text(size = 20)) +
   labs(title = "Test AUROC by Outcome and Predictor", 
        x = "", y = "AUROC",fill = "Predictors") +
-  facet_grid(~ note, scales = "free_x", space = "free_x")
+  facet_grid(~ group, scales = "free_x", space = "free_x")
 ```
 
-This work is licensed under a [Creative Commons Attribution-NonCommercial 4.0 International License](https://creativecommons.org/licenses/by-nc/4.0/).
+We see that among ambulance measures, our model outperforms the MBS, but does not outperform the actual dispatched priority in predicting prehospital interventions or priority in to the hospital. The relatively high predictive value of dispatcher determinations here reflects that these measures are in fact what dispatchers are attempting to determine in setting a priority, though part of this effect could be due to the influence of dispatcher prioritizations on ambulance crew behavior.
 
-Associated [source code](https://github.com/dnspangler/EMDAI/) is licensed under a [GNU General Public Licence 3.0](https://www.gnu.org/licenses/gpl-3.0.en.html)
+The models outperformed dispatched priories by the largest margin in predicting high-risk vital signs, achieving a respectable AUROC of .81 (though this varies a bit depending on threshold). While we found statistically significant differentiation between priorities, it may be seen that the predictive value of dispatcher prioritization with regards to vital signs is low. It may be noted that in our final models, we'll treat NEWS scores as the continuous data they are - A threshold value was chosen here to simplify presentation.
+
+As noted in the descriptive analysis, dispatcher prioritization is a poor predictor of hospital admission, and our model is able to outperform it substantially. For ICU treatment and 3-day mortality however, dispatchers display a higher degree of differentiation. Nonetheless, the model is able to provide an improved predictive value while model performance remains by-and-large consistent.
+
+We had aimed a priori to achieve an AUROC of around 0.8 with these models, which was only achieved in predicting NEWS scores. To place these results into context, we can investigate the predictive value of these models within the sub-group of patients transported to the ED with <= 2 missing vital signs. This allows us to compare our models with the predictive value of NEWS scores, as well as a similar XGB model which includes data taken from the ambulance journal:
+
+```{r transport preds, fig.height=7}
+filter(allpreds, group == "ED Transports") %>%
+ggplot(aes(x = lab, 
+           y = max_test_auc,
+           ymin = max_test_auc - max_test_auc_se,
+           ymax = max_test_auc + max_test_auc_se, 
+           fill = dat)) + 
+  geom_bar(stat = "identity",
+           position = "dodge") +
+  geom_errorbar(stat = "identity",
+                width = 0.5,
+           position = position_dodge(width = 0.9)) +
+  scale_fill_brewer(palette = "Set1") +
+  coord_cartesian(ylim = c(0.4,1))  +
+  theme(axis.text.x = element_text(angle = -45, hjust = 0),
+        panel.grid.major.x = element_blank(),
+        text = element_text(size = 20)) +
+  labs(title = "Test AUROC by Outcome and Predictor", 
+       x = "", y = "AUROC",fill = "Predictors") +
+  facet_grid(~ group, scales = "free_x", space = "free_x")
+```
+
+We see that dispatch prioritization has virtually no value in terms of predicting hospital admission, but performs reasonably well at predicting ICU treatment and mortality. Our dispatch data-based XGB model outperforms NEWS in terms of predicting admission and ICU treatment (NEWS performs quite poorly in these measures), and the dispatched priority of the call comes close to matching NEWS in terms of predictive value for ICU admission! Our ambulance data-based XGB models consistently outperform NEWS in predicting measures of hospital outcome. Our dispatch data-based model comes closest to matching the ambulance model in predicting hospital admission.
+
+It remains before us to further improve these models and improve the quality of our data, and develop adaptations to take consideration of the non-random pattern of missingness. We are also actively working to develop methods to aggregate and present model predictions to nurses in a useful and interpretable manner. This document will be updated as we continue our work in the project. Once we feel that a sufficiently robust approach has been developed, we will validate our methods in a prospectively gathered dataset which we have not observed, and submit the results to a peer-reviewed journal for publication.
