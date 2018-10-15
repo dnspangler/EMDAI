@@ -3,14 +3,14 @@ title: On the development of predictive models for use in Emergency Medical Disp
   centers
 author:
 - Douglas Spangler
-- Uppsala University Hospital
+- Uppsala University Hospital, Uppsala Center for Prehospital Research
 - douglas.spangler@akademiska.se
 date: "October 2, 2018"
 output:
   pdf_document: default
   word_document: default
   html_document: default
-abstract: Triage tools based on Machine Learning offer a promising approach to enhancingthe decisional capacity of staff working at Emergency Medical Dispatch centers. There are however many challenges to implementing such systems. In a 2 year project funded by the Swedish Agency for Innovation, the Uppsala Ambulance Service aims to develop a machine-learning based tool to augment the current rule-based decision support system. In this analysis, we outline our approach to addressing these challenges, provide a thorough descriptive analysis of the data available for this purpose, and provide a brief report regarding the overall performance of a set of preliminary models based on retrospective data. Overall, our current non-optimized models have a fair predictive value across a broad range of outcomes including ambulance interventions, patient vital signs, and hospital outcomes. We also provide an online tool for exploring our free-text data.
+abstract: Triage tools based on Machine Learning offer a promising approach to enhancing the decisional capacity of staff working at Emergency Medical Dispatch centers. There are however many challenges to implementing such systems. In a 2 year project funded by the Swedish Agency for Innovation, the Uppsala Ambulance Service aims to develop a machine-learning based tool to augment the current rule-based decision support system. In this analysis, we outline our approach to addressing these challenges, provide a thorough descriptive analysis of the data available for this purpose, and provide a brief report regarding the overall performance of a set of preliminary models based on retrospective data. Overall, our current non-optimized models have a fair predictive value across a broad range of measures covering ambulance interventions, patient vital signs, and hospital outcomes. We also provide an online tool for exploring our free-text data.
 toc: yes
 toc_depth: 2
 urlcolor: blue
@@ -250,9 +250,7 @@ extract_preds <- function(x){
 # make a pallete of olors corresponding to dispatch priorities
 poutpal <- c("#FF0000","#FFA600","#FFFF00","#00FF00","#0000FF","#FF00FF")
 
-# poutmap <- as.factor(c("4" = "1A","3" = "1B","2" ="2A","1" = "2B","0" = "Referral","NA" = "Unused"))
 poutmap <- c("Unused","Referral","2B","2A","1B","1A")
-#poutmap <- c("1A" = 4,"1B" = 3,"2A" = 2,"2B" = 1,"Referral" = 0,"Unused" = NA)
 
 # Define out-of-regon destinations
 
@@ -355,7 +353,7 @@ varnames <- c(
  "cat_Feber" = "Fever", 
  "cat_Flygolycka" = "Aircraft accident", 
  "cat_Förlossning" = "Childbirth", 
- "cat_Förvirring" = "Confision", 
+ "cat_Förvirring" = "Confusion", 
  "cat_Graviditet" = "Pregnancy", 
  "cat_Hallucination" = "Hallucination", 
  "cat_Halsont" = "Sore throat", 
@@ -377,10 +375,10 @@ varnames <- c(
  "cat_Planerad" = "Planned",
  "cat_Psykiska besvär" = "Psychiatic problems", 
  "cat_Ryggsmärta" = "Back pain", 
- "cat_Rytmrubbning" = "Cardiac arrythmia", 
+ "cat_Rytmrubbning" = "Cardiac arythmia", 
  "cat_Rökexponering" = "Smoke exposure", 
  "cat_Saknas" = "MBS Unused", 
- "cat_Sensoriskt-, motoriskt bortfall" = "Senosory/motor deficiency", 
+ "cat_Sensoriskt-, motoriskt bortfall" = "Sensory/motor deficiency", 
  "cat_Sjöolycka" = "Maritime accident", 
  "cat_Stroke" = "Stroke", 
  "cat_Svimning" = "Fainting", 
@@ -454,7 +452,9 @@ alldata <- alldata %>%
   filter(crcorr %in% c("Ambulance need", "No Ambulance care need")) %>%
   mutate(poutref = ifelse(pout == "Referral",
                        ifelse(crdet %in% c("Hänvisning till annat transportsätt",
-                                           "Hänvisning till sjukresa"),
+                                           "Hänvisning till sjukresa",
+                                           "Annat transportsätt",
+                                           "Sjukresa"),
                          "Alt. txp",
                          "Alt. care"),
                        as.character(pout))) %>%
@@ -471,7 +471,10 @@ Associated [source code](https://github.com/dnspangler/EMDAI/) is licensed under
   
 **External resources:**
 
+[Summary document](http://htmlpreview.github.com/?https://github.com/dnspangler/EMDAI/blob/master/EMDAI-summary.html) - [(source code)](https://github.com/dnspangler/EMDAI/blob/master/EMDAI-summary.Rmd)
+
 [Online Freetext Explorer](https://dnspangler.shinyapps.io/EMD_text_explorer/) - [(source code)](https://github.com/dnspangler/EMDAI/blob/master/freetext_explorer.R)
+  
 
 # Introduction
 
@@ -479,7 +482,7 @@ It is the goal of the Uppsala Ambulance Service (UAS) to provide the right resou
 
 The ability of an Emergency Medical Dispatch (EMD) system to differentiate between acute conditions requiring an ambulance, and conditions that are more appropriately treated using other healthcare resources is dependent on a large number of factors. These include a well educated and trained staff, the provision of feedback and robust clinical guidelines, a healthy workplace culture, well-established links with other healthcare providers, and an effective Clinical Decision Support System (CDSS). While this document with deal exclusively with this final point, it should be recognized that the development of CDSS in the absence of efforts to improve other preconditions for delivering high-quality medical decision making in the practice of EMD are likely to be fruitless.  
 
-CDSS have traditionally been based on explicit rules determined based on clinical expertise. Such "expert systems", including the widely utilized [Medical Priority Dispatch System](https://www.emergencydispatch.org/articles/ArticleMPDS%28Cady%29.html), have the advantage of being relatively simple, and have been found to be reasonably effective in identifying specific high-acuity conditions in the context of EMD. This methodology has been extended to to the identification of low-acuity patients in EMD, and thus far these efforts have had some success. [Shah et al. (2005)](https://doi.org/10.1080/10903120590891651) for instance found that a set of "low priority" dispatch codes could be identified which contained at least 90% calls which were not provided with ALS-level care, while [Hinchey et al. (2007)](https://doi.org/10.1080/10903120601021366) found a comparable rate of less than 1%. [Studnek et al. (2012)](https://doi.org/10.3109/10903127.2011.640415) found that among callers triaged to a low acuity dispatch code, 70-75% of patients could be discharged from the emergency department. 
+CDSS have traditionally been based on explicit rules determined based on clinical expertise. Such "expert systems", including the widely utilized [Medical Priority Dispatch System](https://www.emergencydispatch.org/articles/ArticleMPDS%28Cady%29.html), various [Criteria-Based Dispatch systems](https://www.emsonline.net/assets/CriteriaBasedDispatchGuidelines-Rev2010.pdf), have the advantage of being relatively simple, and have been found to be reasonably effective in identifying specific high-acuity conditions in the context of EMD. This methodology has been extended to to the identification of low-acuity patients in EMD, and thus far these efforts have had some success. [Shah et al. (2005)](https://doi.org/10.1080/10903120590891651) for instance found that a set of "low priority" dispatch codes could be identified which contained at least 90% calls which were not provided with ALS-level care, while [Hinchey et al. (2007)](https://doi.org/10.1080/10903120601021366) found a comparable rate of less than 1%. [Studnek et al. (2012)](https://doi.org/10.3109/10903127.2011.640415) found that among callers triaged to a low acuity dispatch code, 70-75% of patients could be discharged from the emergency department. 
 
 An increasingly popular approach to clinical decision support is the use of predictive models in various forms. Within the domain of emergency medicine, a number of research groups have begun developing machine learning based approaches to triaging patients at the Emergency Department (ED). To describe overall predictive value of predictive models, the machine learning literature tends to refer to the *Area Under the Reciever Operating Characteristics curve* or AUROC. This value constitutes a summary of all potential pairs of sensitivity and specificity afforded by a given model. As implied by it's name, The AUROC can be visualized by plotting each possible sensitivity against specificity:
 
