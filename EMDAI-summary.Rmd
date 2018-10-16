@@ -31,229 +31,14 @@ library(knitr)
 library(huxtable)
 library(pROC)
 
-formatpct <- function(x,dec = 1) round(x*100,dec)
-
-tabletranspose <- function(data){
-  x <- t(data)
-  colnames(x) <- x[1,]
-  x <- x[-1,]
-  x <- as.data.frame(x)
-  return(x)
-}
-
-# make a pallete of colors corresponding to dispatch priorities
-poutpal <- c("#FF0000","#FFA600","#FFFF00","#00FF00","#2020FF","#FF00FF")
-
-poutmap <- c("Unused","Referral","2B","2A","1B","1A")
-
-# Define out-of-regon destinations
-
-oordest <- c("Gävle Sjukhus",
-             "Västerås Sjukhus",
-             "Karolinska Sjukhus",
-             "Örebro Sjukhus", 
-             "Stockholm", 
-             "Eskilstuna Sjukhus",
-             "Avesta Sjukhus", 
-             "Köping Sjukhus", 
-             "Lindesberg Sjukhus", 
-             "Falun Sjukhus", 
-             "Falu Lasarett")
-
-# Define pretty variable names
-
-prettyname <- function(x,vn = varnames,mod = F){
-  
-  if(mod){
-    vn <- vn[,-2]
-  }else{
-    vn <- vn[,-3]
-  }
-  
-  if(length(x) == 1){
-    
-    o <- vn[which(vn[,2] == x),1]
-    
-  }else{
-    
-    o <- sapply(x, function(y){
-      vn[which(vn[,2] == y),1]
-      
-    })
-  }
-  
-  return(as.character(unname(o)))
-  
-}
-
-varnames <- c(
- "caseid" = "Case ID",
- "null_age" = "Patient Age", 
- "null_female" = "Female gender", 
- "null_pcontacts" = "Number of prior contacts", 
- "null_lastcontact" = "Days since last contact", 
- "null_wkday" = "Weekday", 
- "null_time_sin" = "Contact Time (sin transformed)",
- "null_time_cos" = "Contact Time (cos transformed)",
- "null_month_sin" = "Contact Month (sin transformed)",
- "null_month_cos" = "Contact Month (cos transformed)",
- "amb_ambtxp" = "Ambulance transport", 
- "amb_meds" = "Medications administered", 
- "amb_pin" = "Lights & sirens\nto hospital", 
- "amb_o2" = "Supplemental oxygen", 
- "amb_ekgtx" = "EKG transmitted to hospital", 
- "amb_gauze" = "Bleeding control/bandages applied", 
- "amb_iv" = "IV placed", 
- "amb_immob" = "Spine/joint immobilization", 
- "amb_cpr" = "CPR administered by crew", 
- "amb_crit" = "Patient documented as critical", 
- "amb_alert" = "Pre-arrival notification given", 
- "amb_any" = "Any intervention\nprovided", 
- "v_br" = "Breathing rate", 
- "v_spo2" = "Capillary oxygen saturation", 
- "v_pr" = "Pulse rate", 
- "v_bp" = "Systolic blood pressure", 
- "v_temp" = "Temperature", 
- "v_avpu" = "AVPU", 
- "v_gcs" = "Glasgow Coma Scale",
- "news" = "NEWS score", 
- "news_hi" = "NEWS score > 7", 
- "news_lo" = "NEWS score > 4",
- "hosp_ed" = "Patient treated at ED", 
- "hosp_admit" = "Patient admitted\nto ward", 
- "hosp_icu" = "Patient treated\nat ICU", 
- "hosp_radio" = "CT scan performed", 
- "hosp_op" = "Surgical intervention", 
- "hosp_dead3day" = "3-day mortality", 
- "cat_Allergisk reaktion" = "Allergic Reaction", 
- "cat_Allmän barn" = "General Child", 
- "cat_Allmän vuxen" = "General Adult", 
- "cat_Allmän åldring" = "General Elderly", 
- "cat_Andningsbesvär" = "Difficulty Breathing", 
- "cat_Annat" = "Other", 
- "cat_Arm-, bensymtom (ej trauma)" = "Arm/leg sympoms (non-traumatic)", 
- "cat_Blod i urin" = "Blood in urine", 
- "cat_Blodig upphostning" = "Blood in cough", 
- "cat_Blodsocker lågt" = "Low Blood sugar", 
- "cat_Brand" = "Fire", 
- "cat_Brännskada" = "Burn", 
- "cat_Bröstsmärta" = "Chest pain", 
- "cat_Buk-, flanksmärta" = "Abdominal/flank pain", 
- "cat_CBRN" = "CBRN", 
- "cat_Diarré" = "Diarrhea", 
- "cat_Drunkningstillbud" = "Drowning", 
- "cat_Dykeriolycka" = "Diving accident", 
- "cat_Elektrisk skada" = "Electical injury", 
- "cat_Feber" = "Fever", 
- "cat_Flygolycka" = "Aircraft accident", 
- "cat_Förlossning" = "Childbirth", 
- "cat_Förvirring" = "Confusion", 
- "cat_Graviditet" = "Pregnancy", 
- "cat_Hallucination" = "Hallucination", 
- "cat_Halsont" = "Sore throat", 
- "cat_Hjärtstopp" = "Cardiac arrest", 
- "cat_Huvudvärk" = "Headache", 
- "cat_Hypotermi" = "Hypothermia", 
- "cat_ICD" = "ICD", 
- "cat_Illamående" = "Nausea", 
- "cat_Infektion" = "Infection", 
- "cat_Intox/förgiftning" = "Intoxication", 
- "cat_Kramper" = "Convulsions", 
- "cat_Kräkning" = "Vomiting", 
- "cat_Köldskada" = "Cold injury", 
- "cat_Luftvägsbesvär" = "Airway problems", 
- "cat_Mag-, tarmblödning" = "Stomach/Intestinal bleeding", 
- "cat_Näs-, svalgblödning" = "Nose/Throat bleeding", 
- "cat_Ormbett" = "Snake bite", 
- "cat_Pacemaker" = "Pacemaker", 
- "cat_Planerad" = "Planned",
- "cat_Psykiska besvär" = "Psychiatic problems", 
- "cat_Ryggsmärta" = "Back pain", 
- "cat_Rytmrubbning" = "Cardiac arythmia", 
- "cat_Rökexponering" = "Smoke exposure", 
- "cat_Saknas" = "MBS Unused", 
- "cat_Sensoriskt-, motoriskt bortfall" = "Sensory/motor deficiency", 
- "cat_Sjöolycka" = "Maritime accident", 
- "cat_Stroke" = "Stroke", 
- "cat_Svimning" = "Fainting", 
- "cat_Sårskada" = "Minor truama", 
- "cat_Sänkt vakenhet" = "Reduced Consciousness", 
- "cat_Trafikolycka" = "Traffic accident", 
- "cat_Trauma" = "Trauma", 
- "cat_Urinkateterstopp" = "Urinary catheter blockage", 
- "cat_Urinstämma" = "Urinary retention", 
- "cat_Urogenitala besvär" = "Urogenital problems", 
- "cat_Vaginal blödning" = "Vaginal bleeding", 
- "cat_Våld-hot-suicidhot" = "Violence/threats/Suicide", 
- "cat_Yrsel" = "Dizziness", 
- "cat_Ögon" = "Eye problems", 
- "freetext" = "", 
- "operator" = "", 
- "starttime" = "", 
- "pnrvalid" = "", 
- "pnrage" = "", 
- "pnrfemale" = "", 
- "pout" = "Dispatched Priority", 
- "closereason" = "", 
- "calltype" = "", 
- "ambj" = "", 
- "export" = "", 
- "cosmicj" = "", 
- "catpn" = "", 
- "recpoutncat" = "", 
- "recpoutalln" = "MBS priority (numeric)", 
- "recpoutall" = "MBS priority", 
- "cr" = "Care need", 
- "crdet" = "Disposition", 
- "crdest" = "Destination", 
- "crcorr" = "Care need", 
- "wkday" = "Weekday",
- "eddiag" = "ED Diagnosis", 
- "carehrs" = "Hours until discharge", 
- "daystodeath" = "Days to death", 
- "hour" = "Contact hour", 
- "dead" = "Patient died within follow-up", 
- "daystodeathpos" = "Days to death", 
- "daystodeathneg" = "Days to death", 
- "recpout" = "MBS priority", 
- "recpoutn" = "MBS priority", 
- "poutn" = "Dispatched priority",
- "ambptobs" = "Ambulance",
- "vobs" = "Vitals",
- "hospptobs" = "Hospital",
- "txpobs" = "ED Transports",
- "null" = "Null", 
- "cat" = "Call Types", 
- "mbs" = "MBS", 
- "alldisp" = "XGB model - Dispatch", 
- "allamb" = "XGB model - Ambulance",
- "train_auc_mean" = "Mean Training AUROC",
- "test_auc_mean" = "Mean Test AUROC")
-
-varnames <- data.frame(pretty = varnames,
-                       orig = names(varnames),
-                       mod = make.names(names(varnames)),
-                       stringsAsFactors = F)
+source("funs.R",encoding = "UTF8")
 
 # dataset with follow-up ambulance contacts
 load("181002_alldata.rda")
 
-# Model summaries
-load("181002_recpoutsum.rda")
+# Clear non-medical calls and calls with no disposition data, classify referrals as to transport/care
 
-# Clear non-medical calls and calls with no disposition data
-alldata <- alldata %>%
-  filter(crcorr %in% c("Ambulance need", "No Ambulance care need"),
-         as.Date(starttime) > as.Date("2016-08-01")) %>%
-  mutate(poutref = ifelse(pout == "Referral",
-                       ifelse(crdet %in% c("Hänvisning till annat transportsätt",
-                                           "Hänvisning till sjukresa",
-                                           "Annat transportsätt",
-                                           "Sjukresa"),
-                         "Alt. txp",
-                         "Alt. care"),
-                       as.character(pout))) %>%
-  mutate(poutref = factor(poutref,levels = c("1A", "1B", "2A", "2B", "Alt. txp", "Alt. care")))
+alldata <- cleandata(alldata)
 
 # Define cohorts
 
@@ -282,12 +67,13 @@ hospptobs <- which(alldata$export == 1 &
                     alldata$cosmicj == 0) &
                   !(alldata$crdest %in% oordest))
 
-# Only ambulance transports to an ED
+# Only ambulance transports to an ED with vitals
 txpobs <- which(alldata$amb_ambtxp == 1 &
                 alldata$hosp_ed == 1 &
                 !is.na(alldata$news))
 
 # Generate descriptive datasets
+
 
 # ambdata <- alldata[ambobs,] %>%
 #   dplyr::select(starts_with("amb_"),poutref, recpoutall, pout) %>%
@@ -330,35 +116,35 @@ vars <- c("Any intervention\nprovided",
 
 # Generate Predictive datasets
 
-# ambdata <- alldata[ambptobs,] %>%
-#   dplyr::select(starts_with("amb_"),poutref, recpoutall, pout) %>%
-#          mutate(changed = ifelse(recpoutall == "Unused","Unused",
-#                           ifelse(recpoutall == pout,"Unchanged","Changed"))) %>%
-#   gather(key = "key", value = "value", starts_with("amb_")) %>%
-#   mutate(key = prettyname(key),
-#          group = "Ambulance") %>%
-#   ungroup()
-# 
-# vdata <- alldata[vobs,] %>%
-#   dplyr::select(starts_with("v_"),starts_with("news"),amb_o2,poutref,recpoutall,pout) %>%
-#          mutate(changed = ifelse(recpoutall == "Unused","Unused",
-#                           ifelse(recpoutall == pout,"Unchanged","Changed"))) %>%
-#   gather(key = "key", value = "value", starts_with("v_"), starts_with("news"), amb_o2) %>%
-#   mutate(key = prettyname(key),
-#          group = "Vitals")
-# 
-# hospdata <- alldata[hospptobs,] %>%
-#   dplyr::select(starts_with("hosp_"),poutref, recpoutall,pout) %>%
-#          mutate(changed = ifelse(recpoutall == "Unused","Unused",
-#                           ifelse(recpoutall == pout,"Unchanged","Changed"))) %>%
-#   gather(key = "key", value = "value", starts_with("hosp_")) %>%
-#   mutate(key = prettyname(key),
-#          group = "Hospital") %>%
-#   ungroup()
+ambdata <- alldata[ambptobs,] %>%
+  dplyr::select(starts_with("amb_"),poutref, recpoutall, pout) %>%
+         mutate(changed = ifelse(recpoutall == "Unused","Unused",
+                          ifelse(recpoutall == pout,"Unchanged","Changed"))) %>%
+  gather(key = "key", value = "value", starts_with("amb_")) %>%
+  mutate(key = prettyname(key),
+         group = "Ambulance") %>%
+  ungroup()
 
-# allpredmeasures <- bind_rows(ambdata,vdata,hospdata)
-# 
-# save(allpredmeasures,file = "allpredmeasures.rda")
+vdata <- alldata[vobs,] %>%
+  dplyr::select(starts_with("v_"),starts_with("news"),amb_o2,poutref,recpoutall,pout) %>%
+         mutate(changed = ifelse(recpoutall == "Unused","Unused",
+                          ifelse(recpoutall == pout,"Unchanged","Changed"))) %>%
+  gather(key = "key", value = "value", starts_with("v_"), starts_with("news"), amb_o2) %>%
+  mutate(key = prettyname(key),
+         group = "Vitals")
+
+hospdata <- alldata[hospptobs,] %>%
+  dplyr::select(starts_with("hosp_"),poutref, recpoutall,pout) %>%
+         mutate(changed = ifelse(recpoutall == "Unused","Unused",
+                          ifelse(recpoutall == pout,"Unchanged","Changed"))) %>%
+  gather(key = "key", value = "value", starts_with("hosp_")) %>%
+  mutate(key = prettyname(key),
+         group = "Hospital") %>%
+  ungroup()
+
+allpredmeasures <- bind_rows(ambdata,vdata,hospdata)
+
+save(allpredmeasures,file = "allpredmeasures.rda")
 
 load("allpredmeasures.rda")
 
@@ -400,6 +186,9 @@ txprocs <- txpdata %>%
 rocs <- bind_rows(rocs,txprocs) %>%
   mutate(lab = key) %>%
   select(-key)
+
+# XGB Model summaries
+load("181002_recpoutsum.rda")
 
 allpreds <- recpoutsum %>%
   select(dat,lab,max_test_auc,max_test_auc_std,note) %>%
@@ -545,7 +334,7 @@ Among all of these measures, we see a trend whereby both high and low acuity cal
 
 ## Prioritization
 
-Below, we report the distribution of 6 key measures of patient care need within our calls as they are currently dispatched. We report here the prevalence of the measure among calls with a relevant record (calls referred to alternate care with no subsequent healthcare contact are not included in the denominator for instance):
+Below, we report the distribution of 6 key measures of patient care need within our calls as they are currently dispatched. We report here the prevalence of the measure among calls with a relevant record (calls referred to alternate care with no subsequent healthcare contact for instance are not included in the denominator). Error bars indicate one standard error:
 
 ```{r prios, fig.height=7}
 
@@ -577,11 +366,11 @@ We see that each dispatched priority has a successively lower proportion of pati
 
 We see that dispatcher prioritization is a poor predictor of hospital admission, with priority 2 patients having perhaps even higher admission rates than priority 1 patients. With regards to ICU treatment however, the predictive value of EMD prioritization is better, with the highest priority patients seeing ICU treatment rates of 18%, while a handful of referred patients experienced this outcome. Upwards of 10% of priority 1A patients died within 72 hours, while this outcome was very rare among the other patient groups.
 
-While dispatched priorities displayed could differentiate robustly among most measures, dispatched priority was less predictive for measures indicative of sub-acute care needs such as hospital admission. While only a small number of patients referred to alternate care were treated at an ICU (including intermediate care units) or died within 3 days, even a small number of errors among these patients is unacceptable, and we are reviewing all calls in these categories (ICU = 12, Deaths = 2).
+While dispatcher priorities could differentiate robustly among most measures, dispatched priority was less predictive for measures indicative of sub-acute care needs such as hospital admission. While only a small number of patients referred to alternate care were treated at an ICU (including intermediate care units) or died within 3 days, even a small number of errors among these patients is unacceptable, and we are reviewing all calls in these categories (ICU = 12, Deaths = 2).
 
 ## Prediction
 
-While the ability to measure the clinical quality of the decisions we make at the EMD center is useful in and of itself, it is the goal of the project to develop predictive models to give our dispatch nurses insight into the likelihood of these outcomes occurring for individual patients at the point of care. To do this, we created a dataset containing patient demographics, the time of contact, frequency of previous contacts, call types, answers provided in the current decision support system, and free-text notes written by dispatchers. These were analyzed using a tree-based machine learning algorithm called [Extreme Gradient Boosting](https://doi.org/10.1145/2939672.2939785) (XGB). Below, we summarize the performance of our preliminary models using a common measure of discriminatory ability called the [Area Under a Reciever Operating Characteristics](https://en.wikipedia.org/wiki/Receiver_operating_characteristic) curve - AUROC or C-index for short. Note that while we included only calls with a relevant journal in the descriptive analysis above, here we aslo include referred patients with valid PINs. We compare the 10-fold cross-validated performance of our models with the theoretical predictive value of the recommended priority of the MBS, and the actual dispatched priority in predicting the outcome:
+The ability to measure the clinical quality of the decisions we make at the EMD center is useful in and of itself, but the goal of the project is to develop predictive models to give our dispatch nurses insight into the likelihood of these outcomes occurring for individual patients at the point of care. To do this, we created a dataset containing patient demographics, the time of contact, frequency of previous contacts, call types, answers provided in the current decision support system, and free-text notes written by dispatchers. These were analyzed using a tree-based machine learning algorithm called [Extreme Gradient Boosting](https://doi.org/10.1145/2939672.2939785) (XGB). Below, we summarize the performance of our preliminary models using a common measure of discriminatory ability called the [Area Under a Reciever Operating Characteristics](https://en.wikipedia.org/wiki/Receiver_operating_characteristic) curve - AUROC or C-index for short. Note that while we included only calls with a relevant journal in the descriptive analysis above, here we aslo include referred patients with valid PINs so as to include examples of "sucessful" referrals. We compare the 10-fold cross-validated performance of our models with the theoretical predictive value of the recommended priority of the MBS, and the actual dispatched priority in predicting the outcome:
 ```{r preds, fig.height=7}
 
 filter(allpreds, group != "ED Transports") %>%
