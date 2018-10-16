@@ -116,35 +116,35 @@ vars <- c("Any intervention\nprovided",
 
 # Generate Predictive datasets
 
-ambdata <- alldata[ambptobs,] %>%
-  dplyr::select(starts_with("amb_"),poutref, recpoutall, pout) %>%
-         mutate(changed = ifelse(recpoutall == "Unused","Unused",
-                          ifelse(recpoutall == pout,"Unchanged","Changed"))) %>%
-  gather(key = "key", value = "value", starts_with("amb_")) %>%
-  mutate(key = prettyname(key),
-         group = "Ambulance") %>%
-  ungroup()
-
-vdata <- alldata[vobs,] %>%
-  dplyr::select(starts_with("v_"),starts_with("news"),amb_o2,poutref,recpoutall,pout) %>%
-         mutate(changed = ifelse(recpoutall == "Unused","Unused",
-                          ifelse(recpoutall == pout,"Unchanged","Changed"))) %>%
-  gather(key = "key", value = "value", starts_with("v_"), starts_with("news"), amb_o2) %>%
-  mutate(key = prettyname(key),
-         group = "Vitals")
-
-hospdata <- alldata[hospptobs,] %>%
-  dplyr::select(starts_with("hosp_"),poutref, recpoutall,pout) %>%
-         mutate(changed = ifelse(recpoutall == "Unused","Unused",
-                          ifelse(recpoutall == pout,"Unchanged","Changed"))) %>%
-  gather(key = "key", value = "value", starts_with("hosp_")) %>%
-  mutate(key = prettyname(key),
-         group = "Hospital") %>%
-  ungroup()
-
-allpredmeasures <- bind_rows(ambdata,vdata,hospdata)
-
-save(allpredmeasures,file = "allpredmeasures.rda")
+# ambdata <- alldata[ambptobs,] %>%
+#   dplyr::select(starts_with("amb_"),poutref, recpoutall, pout) %>%
+#          mutate(changed = ifelse(recpoutall == "Unused","Unused",
+#                           ifelse(recpoutall == pout,"Unchanged","Changed"))) %>%
+#   gather(key = "key", value = "value", starts_with("amb_")) %>%
+#   mutate(key = prettyname(key),
+#          group = "Ambulance") %>%
+#   ungroup()
+# 
+# vdata <- alldata[vobs,] %>%
+#   dplyr::select(starts_with("v_"),starts_with("news"),amb_o2,poutref,recpoutall,pout) %>%
+#          mutate(changed = ifelse(recpoutall == "Unused","Unused",
+#                           ifelse(recpoutall == pout,"Unchanged","Changed"))) %>%
+#   gather(key = "key", value = "value", starts_with("v_"), starts_with("news"), amb_o2) %>%
+#   mutate(key = prettyname(key),
+#          group = "Vitals")
+# 
+# hospdata <- alldata[hospptobs,] %>%
+#   dplyr::select(starts_with("hosp_"),poutref, recpoutall,pout) %>%
+#          mutate(changed = ifelse(recpoutall == "Unused","Unused",
+#                           ifelse(recpoutall == pout,"Unchanged","Changed"))) %>%
+#   gather(key = "key", value = "value", starts_with("hosp_")) %>%
+#   mutate(key = prettyname(key),
+#          group = "Hospital") %>%
+#   ungroup()
+# 
+# allpredmeasures <- bind_rows(ambdata,vdata,hospdata)
+# 
+# save(allpredmeasures,file = "allpredmeasures.rda")
 
 load("allpredmeasures.rda")
 
