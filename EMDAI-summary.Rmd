@@ -14,7 +14,11 @@ output:
   
 This work is licensed under a [Creative Commons Attribution-NonCommercial 4.0 International License](https://creativecommons.org/licenses/by-nc/4.0/).
 
+<<<<<<< HEAD
 Associated [source code](https://github.com/dnspangler/EMDAI/){target="_blank"} is licensed under a [GNU General Public Licence 3.0](https://www.gnu.org/licenses/gpl-3.0.en.html)
+=======
+Associated [source code](https://github.com/dnspangler/EMDAI/) is licensed under a [GNU General Public Licence 3.0](https://www.gnu.org/licenses/gpl-3.0.en.html){target="_blank"}
+>>>>>>> dd7fbe1a4a90584635ffba86eb17553cd92c8474
   
   
 ```{r setup, include=FALSE}
