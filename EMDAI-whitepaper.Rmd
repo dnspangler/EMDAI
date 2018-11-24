@@ -25,20 +25,6 @@ knitr::opts_chunk$set(echo = FALSE,
                       fig.align = "center",
                       dpi = 300)
 
-library(dplyr)
-library(ggplot2)
-library(tidyr)
-library(knitr)
-library(kableExtra)
-library(gridExtra)
-library(lubridate)
-library(reshape2)
-library(PRROC)
-library(xgboost)
-library(data.table)
-library(rms)
-library(effects)
-
 # Set random seed for reproducibility
 
 set.seed(42)
@@ -51,7 +37,7 @@ source("funs.R",encoding = "UTF8")
 load("181002_fulldata.rda")
 
 # dataset with follow-up ambulance contacts
-load("181002_alldata.rda")
+load("181124_alldata.rda")
 
 # Clear non-medical calls and calls with no disposition data
 alldata <- cleandata(alldata)
@@ -78,9 +64,9 @@ It is the goal of the Uppsala Ambulance Service (UAS) to provide the right resou
 
 The ability of an Emergency Medical Dispatch (EMD) system to differentiate between acute conditions requiring an ambulance, and conditions that are more appropriately treated using other healthcare resources is dependent on a large number of factors. These include a well educated and trained staff, the provision of feedback and robust clinical guidelines, a healthy workplace culture, well-established links with other healthcare providers, and an effective Clinical Decision Support System (CDSS). While this document with deal exclusively with this final point, it should be recognized that the development of CDSS in the absence of efforts to improve other preconditions for delivering high-quality medical decision making in the practice of EMD are likely to be fruitless.  
 
-CDSS have traditionally been based on explicit rules determined based on clinical expertise. Such "expert systems", including the widely utilized [Medical Priority Dispatch System](https://www.emergencydispatch.org/articles/ArticleMPDS%28Cady%29.html), various [Criteria-Based Dispatch systems](https://www.emsonline.net/assets/CriteriaBasedDispatchGuidelines-Rev2010.pdf), have the advantage of being relatively simple, and have been found to be reasonably effective in identifying specific high-acuity conditions in the context of EMD. This methodology has been extended to to the identification of low-acuity patients in EMD, and thus far these efforts have had some success. [Shah et al. (2005)](https://doi.org/10.1080/10903120590891651) for instance found that a set of "low priority" dispatch codes could be identified which contained at least 90% calls which were not provided with ALS-level care, while [Hinchey et al. (2007)](https://doi.org/10.1080/10903120601021366) found a comparable rate of less than 1%. [Studnek et al. (2012)](https://doi.org/10.3109/10903127.2011.640415) found that among callers triaged to a low acuity dispatch code, 70-75% of patients could be discharged from the emergency department. 
+CDSS have traditionally been based on explicit rules determined based on clinical expertise. Such "expert systems", including the widely utilized [Medical Priority Dispatch System](https://www.emergencydispatch.org/articles/ArticleMPDS%28Cady%29.html) and various [Criteria-Based Dispatch systems](https://www.emsonline.net/assets/CriteriaBasedDispatchGuidelines-Rev2010.pdf), have the advantage of being relatively simple, and have been found to be reasonably effective in identifying specific high-acuity conditions in the context of EMD. This methodology has been extended to to the identification of low-acuity patients in EMD, and thus far these efforts have had some success. [Shah et al. (2005)](https://doi.org/10.1080/10903120590891651) for instance found that a set of "low priority" dispatch codes could be identified which contained at least 90% calls which were not provided with ALS-level care, while [Hinchey et al. (2007)](https://doi.org/10.1080/10903120601021366) found a comparable rate of less than 1%. [Studnek et al. (2012)](https://doi.org/10.3109/10903127.2011.640415) found that among callers triaged to a low acuity dispatch code, 70-75% of patients could be discharged from the emergency department. 
 
-An increasingly popular approach to clinical decision support is the use of predictive models in various forms. Within the domain of emergency medicine, a number of research groups have begun developing machine learning based approaches to triaging patients at the Emergency Department (ED). To describe overall predictive value of predictive models, the machine learning literature tends to refer to the *Area Under the Reciever Operating Characteristics curve* or AUROC. This value constitutes a summary of all potential pairs of sensitivity and specificity afforded by a given model. As implied by it's name, The AUROC can be visualized by plotting each possible sensitivity against specificity:
+An increasingly popular approach to clinical decision support is the use of predictive models in various forms. Within the domain of emergency medicine, a number of research groups have begun developing machine learning based approaches to triaging patients at the Emergency Department (ED). To describe the overall predictive value of predictive models, the machine learning literature tends to refer to the *Area Under the Reciever Operating Characteristics curve* or AUROC. This value constitutes a summary of all potential pairs of sensitivity and specificity afforded by a given model. As implied by it's name, the AUROC can be visualized by plotting each possible sensitivity against specificity:
 
 ```{r, fig.width=3,fig.height=3}
 
@@ -99,9 +85,14 @@ roc <- PRROC::roc.curve(t[t[1] == 0,2],
 
 
 ggplot(data = data.frame(roc$curve),
-       aes(x = X1,y= X2)) +
-  geom_abline(slope = 1, color = "red", size = 1) +
+       aes(x = X1,y = X2)) +
+  geom_abline(slope = 1,
+              color = "red", 
+              size = 1) +
   geom_point(size = 1) +
+  geom_point(aes(x=0.65,y=0.9),
+             size = 4,
+             color ="blue") +
   labs(x = "1-Specificity (FPR)",
        y = "Sensitivtiy") +
   scale_x_continuous(breaks = seq(0,1,0.2))+
@@ -109,7 +100,7 @@ ggplot(data = data.frame(roc$curve),
 
 ```
 
-In the plot of randomly generated data above, the black line represents the predictive value of the model - in this case 0.74. Random guessing would result in an AUROC of 0.5 and a curve laying flat along the red line, while a model making perfect predictions would have an AUROC of 1. From this plot, any given sensitivity can be selected and the corresponding specificity read off - Selecting a sensitivity of 0.9 here results in a specificity of roughly 0.4.
+In the plot of randomly generated data above, the black line represents the predictive value of the model - in this case, an AUROC of 0.74. Random guessing would result in an AUROC of 0.5 and a curve laying flat along the red line, while a model making perfect predictions would have an AUROC of 1. From this plot, any given sensitivity can be selected and the corresponding specificity read off - Selecting a sensitivity of 0.9 here results in a specificity of roughly 0.35 (Equaivalent to a False Positive Rate (FPR) of 0.65, indiated by the blue dot in the above plot).
 
 The AUROC value provides a useful overall summary, but is also problematic in a number of ways. AUROC values will tend to be higher in cases where the outcome is rare, and predictors with fewer levels will have artificially low AUROC values. Being a summary, the AUROC includes combinations of sensitivity and specificity which may be unimportant clinically. For instance, having anything less than an extremely high degree of sensitivity for cardiac arrests would be unacceptable. While better measures of overall predictive value do exist (the area under a precision-recall curve for instance), for better or worse, AUROC is the measure which has become the "industry standard", and which we will report in this analysis.
 
@@ -814,7 +805,128 @@ We see that we have a distribution of lengths with a median of 129 - Essentially
 
 A number of techniques may be used to explore these data to extract meaning from this quite complex dataset. These vary from the simple (word frequencies and term co-occurrences) to the sophisticated (k-means clustering and topic modelling). Our primary interest is to investigate the properties of these terms in relationship to specific binary outcomes. To perform this task visually, we developed an exploratory analysis tool based on the word-ratio approach described by Julia Silge in her excellent book [Text Mining with R](https://www.tidytextmining.com/). In this approach, we generate a plot for each outcome of interest, whereby the x axis represents a term's prevalence among calls in which a given outcome does not occur, while the y axis represents the prevalence of the term among calls with the outcome. In this regime, terms falling falling above the red line at x = y occur more frequently in "high acuity" calls as defined by a given measure, and vice versa. Finally, we plot these terms on a log-log scale. For example, we could examine our data to see which terms are associated with the documentation of immobilization in trauma calls:
 
+```{r text preprocessing}
+
+# Generate stopword lists
+
+# swe_stop <- read.delim("https://gist.githubusercontent.com/hannseman/5608626/raw/7b11a75d393a68d0145bdcefb06fc06d2764daa8/swedish_stopwords.txt",
+#                        header=F, encoding = "UTF-8", stringsAsFactors = F) 
+# 
+# # Define negation words to exclude from stopword list for n-grams
+# swe_stop_ngram <- swe_stop %>%
+#   filter(!V1 %in% c("inte","ej","icke","blir","bli","blev","blivit","mycket","nu","utan","var"))
+# 
+# # Define regex friendly list of stopwords
+# swe_stop_reg <- paste0(" ",paste(swe_stop$V1,collapse = " | ")," | *\\b[[:alpha:]]{1}\\b *")
+# swe_stop_ngram_reg <- paste0(" ",paste(swe_stop_ngram$V1,collapse = " | ")," | *\\b[[:alpha:]]{1}\\b *")
+#
+# # Use tidytext to Tokenize and convert to word matrix (Should make this use a function really)
+#
+# ft <- fulldata %>%
+#   dplyr::select(caseid,freetext) %>%
+#   mutate(cleanft = tolower(freetext)) %>%
+#   mutate(cleanft = str_replace_all(cleanft, "[^[:alpha:]]"," ")) %>%
+#   dplyr::select(caseid,cleanft)
+# 
+# cleanwords <- ft %>%
+#   mutate(cleanft = str_replace_all(cleanft, swe_stop_reg, " "),
+#          type = "word") %>%
+#   unnest_tokens(term, cleanft, token = "words") %>%
+#   group_by(caseid,term) %>%
+#   mutate(docfreq = n()) %>%
+#   group_by(term) %>%
+#   mutate(totfreq = n()) %>%
+#   distinct() %>%
+#   filter(totfreq > 199)
+# 
+# cleanbigrams <- ft %>%
+#   mutate(cleanft = str_replace_all(cleanft, swe_stop_ngram_reg, " "),
+#          type = "bigram") %>%
+#   unnest_tokens(term, cleanft, token = "ngrams",n = 2) %>%
+#   group_by(caseid,term) %>%
+#   mutate(docfreq = n()) %>%
+#   group_by(term) %>%
+#   mutate(totfreq = n()) %>%
+#   distinct() %>%
+#   filter(totfreq > 99)
+# 
+# cleantokens <- rbind(cleanwords, cleanbigrams) %>%
+#   filter(!is.na(term)) %>%
+#   bind_tf_idf(caseid,term,docfreq)
+# 
+# wordmat <- cleantokens %>%
+#   distinct() %>%
+#   dcast(caseid ~ term, value.var = "tf_idf") %>%
+#   mutate_all(funs(ifelse(is.na(.),0,.)))
+# 
+# names(wordmat)[-1] <- paste0("t_",names(wordmat)[-1])
+#
+# save(wordmat, file = "wordmat.rda")
+
+load("wordmat.rda")
+
+alldata <- left_join(alldata, wordmat, by = "caseid") %>%
+  mutate_at(vars(starts_with("t_")),funs(ifelse(is.na(.),0,.)))
+
+```
+
+
 ```{r wordratios}
+
+# Generate aggregate word ratios
+
+# cats <- select(alldata,starts_with("cat_"))
+# 
+# cats <- lapply(cats, function(x){which(x == 1)})
+# 
+# catids <- lapply(cats, function(x){alldata$caseid[x]})
+# 
+# topcat <- catids[which(sapply(catids, length) > 1000)]
+# 
+# catids$cat_Full <- alldata$caseid
+# 
+# outobs <- c(rep(1,sum(grepl("amb_",names(txtout)))),
+#             rep(2,sum(grepl("v_",names(txtout)))),
+#             rep(3,sum(grepl("hosp_",names(txtout)))))
+# 
+# names(outobs) <- names(txtout)[-1]
+# 
+# desctokens <- cleantokens %>%
+#   left_join(.,txtout,by="caseid")
+# 
+# wordratios <- data.frame(term = character(0),
+#                          ct = character(0),
+#                          out = character(0),
+#                          stringsAsFactors = F)
+# 
+# for(i in 1:length(outobs)){
+#   
+#   for(j in 1:length(topcat)){
+#     
+#     f <- desctokens %>% 
+#       filter(caseid %in% topcat[[j]] &
+#                caseid %in% obs[[outobs[i]]]) %>%
+#       group_by_(names(outobs[i])) %>% 
+#       count(term, sort = TRUE) %>% 
+#       left_join(desctokens %>% 
+#                   group_by_(names(outobs[i])) %>% 
+#                   summarise(total = n())) %>%
+#       mutate(freq = n/total) %>% 
+#       dplyr::select_(names(outobs[i]), "term", "freq") %>% 
+#       spread_(names(outobs[i]), "freq", fill = 0) %>%
+#       mutate(ct = names(topcat[j]),
+#              out = names(outobs[i]))
+#     
+#     if(ncol(f) == 5){
+#       
+#       wordratios <- bind_rows(wordratios,
+#                               f)
+#       
+#     }
+#   }
+# }
+#
+# save(wordratios, "180903_wordratios.rda")
 
 load("180903_wordratios.rda")
 
@@ -851,16 +963,16 @@ We first calculated the term frequency / inverse document frequency value for ea
 
 ```{r svd}
 
-# svd <- svd(as.matrix(select(alldata,starts_with("t_"))))
+# svd <- svd(as.matrix(dplyr::select(alldata,starts_with("t_"))))
+# 
+# save(svd, file = "181124_svd.rda")
 
-#save(svd, file = "180922_svd.rda")
-
-load("180922_svd.rda")
+load("181124_svd.rda")
 
 ind <- qplot(1:length(svd$d),
       svd$d^2/sum(svd$d^2)*100,
       ylab="Percent variability explained") +
-  scale_y_continuous(breaks = seq(0,0.3,0.05)) +
+  scale_y_continuous(breaks = seq(0,0.6,0.1)) +
   labs(title = "Singluar Value Decomposition",
        x = "Index")
 
@@ -876,7 +988,7 @@ grid.arrange(ind,cum,ncol = 1)
 
 ```
 
-We see that while there is some gradient which we can exploit, SVD does not result in a small number of variables which can capture a large portion of the overall variability, with individual vectors capturing only fractions of a percent of the variability in the data. Nonetheless, there is some gradient which could be exploited - it seems that including the 1000 most predictive singular values for each observation would be a good choice for "denoising" purposes and improving model training times. At this threshold, we retain just over 90% of the variability in the data, while cutting the number of variables we need to include in our models by over half.
+We see that while there is some gradient which we can exploit, SVD does not result in a small number of variables which can capture a large portion of the overall variability, with individual vectors capturing only fractions of a percent of the variability in the data. Nonetheless, there is some gradient which could be exploited - it seems that including the 600 or so most predictive singular values for each observation would be a good choice for "denoising" purposes and improving model training times. At this threshold, we retain just over 80% of the variability in the data, while cutting the number of variables we need to include in our models by over half.
 
 # 3) Predictive modelling
 
@@ -886,7 +998,7 @@ With a solid grasp of the distributional characteristics of our data, we can beg
 
 We can begin by examining the predictive value of only the patient and call characteristics which we capture. For the sake of simplicity, we will here limit ourselves to characterizing a single outcome - The documentation of any of the prehospital interventions noted above. As this outcome is binary, a reasonable choice of initial approach is logistic regression using a "sandwich" robust co-variance matrix estimate to account for clustering. We'll use the tools developed for this purpose in Frank Harrell's excellent Regression Modelling Strategies (rms) R package and described in the [book of the same name](https://doi.org/10.1007/978-1-4757-3462-1). Note that while Harrell prefer "C-index" over AUROC, the terms are interchangeable.
 
-As we saw that we have a number of predictors which are non likely to have linear effects, a simple linear model is not appropriate. A solid choice for handling non-linear predictors is the use of restricted cubic splines; This method essentially generates fixed point estimates at _k_ intervals along the trimmed range of the variable, and fits a cubic polynomial between these points, while restricting estimates outside of this range to be linear.  For contact hour, we generate sine and cosine transformations of this variable, and include the interaction between these variables in our model to account for the cyclical nature of the 24 hour period. Furthermore, in exploratory analysis, we found that age and contact time appeared to interact - An important effect which makes sense based on theory and which should be considered in the analysis. It's also reasonable to believe that time will have different effects on weekdays and weekends. Adding these considerations to be model produces the following fit:
+As we saw that we have a number of predictors which are not likely to have linear effects, a simple linear model is not appropriate. A solid choice for handling non-linear predictors is the use of restricted cubic splines; This method essentially generates fixed point estimates at _k_ intervals along the trimmed range of the variable, and fits a cubic polynomial between these points, while restricting estimates outside of this range to be linear.  For contact hour, we generate sine and cosine transformations of this variable, and include the interaction between them in our model to account for the cyclical nature of the 24 hour period (See [this page](https://ianlondon.github.io/blog/encoding-cyclical-features-24hour-time/) for some more of the thought behind this). Furthermore, in exploratory analysis, we found that age and contact time appeared to interact - An important effect which makes sense based on theory and which should be considered in the analysis. It's also reasonable to believe that time will have different effects on weekdays and weekends. Adding these considerations to be model produces the following fit:
 
 ```{r nllrm}
 
@@ -1099,7 +1211,7 @@ As such, we will limit this analysis to considering the technique we have found 
 ```{r toyxgb}
 
 dat <- moddata[ambptobs,c(3,12:78)]
-lab <- moddata[ambptobs,2698]
+lab <- moddata[ambptobs,which(dimnames(moddata)[[2]] == "amb_any")]
 
 
 xgbtoymod <- do.call(xgboost,testparams)
@@ -1129,7 +1241,7 @@ Let's begin by re-fitting our last model using xgboost. We generate a plot of ho
 
 ```{r xgbcat}
 dat <- moddata[ambptobs,predcols$cat]
-lab <- moddata[ambptobs,2698]
+lab <- moddata[ambptobs,which(dimnames(moddata)[[2]] == "amb_any")]
 
 xgbcatmodcv <- do.call(xgb.cv,testparams)
 

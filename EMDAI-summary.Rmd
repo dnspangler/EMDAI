@@ -24,13 +24,6 @@ knitr::opts_chunk$set(echo = FALSE,
                       cache = FALSE,
                       fig.width = 12)
 
-library(dplyr)
-library(tidyr)
-library(ggplot2)
-library(knitr)
-library(huxtable)
-library(pROC)
-
 source("funs.R",encoding = "UTF8")
 
 # dataset with follow-up ambulance contacts
@@ -166,7 +159,7 @@ rocs <- allpredmeasures %>%
          recpoutall = 6-as.numeric(recpoutall)) %>%
   gather(key = "dat",value = "predval", recpoutall, pout) %>%
   group_by(key,dat,group) %>%
-  summarize(max_test_auc = roc(value,predval)$auc,
+  dplyr::summarize(max_test_auc = roc(value,predval)$auc,
             max_test_auc_se = sqrt(var(roc(value,predval)))) %>%
   ungroup() %>%
   mutate(dat = prettyname(dat))
@@ -178,7 +171,7 @@ txprocs <- txpdata %>%
          recpoutall = 6-as.numeric(recpoutall)) %>%
   gather(key = "dat",value = "predval", recpoutall, pout,news) %>%
   group_by(key,dat,group) %>%
-  summarize(max_test_auc = roc(value,predval)$auc,
+  dplyr::summarize(max_test_auc = roc(value,predval)$auc,
             max_test_auc_se = sqrt(var(roc(value,predval)))) %>%
   ungroup() %>%
   mutate(dat = prettyname(dat))

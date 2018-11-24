@@ -1,3 +1,23 @@
+# Load libraries
+
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(stringr)
+library(knitr)
+library(kableExtra)
+library(gridExtra)
+library(lubridate)
+library(reshape2)
+library(pROC)
+library(huxtable)
+library(PRROC)
+library(xgboost)
+library(data.table)
+library(rms)
+library(effects)
+library(tidytext)
+
 # Set common ggplot theme options
 
 stdtheme <- theme(text = element_text(size = 16))
@@ -417,11 +437,14 @@ cleandata <- function(x){
                             ifelse(crdet %in% c("Hänvisning till annat transportsätt",
                                                 "Hänvisning till sjukresa",
                                                 "Annat transportsätt",
-                                                "Sjukresa",
-                                                "Helikopter"),
+                                                "Sjukresa"),
                                    "Alt. txp",
-                                   "Alt. care"),
+                                   # Set calls lacking disposition details, and misclassified Ambulance and helicopter calls to NA
+                                   ifelse(crdet %in% c("",
+                                                       "Helikopter",
+                                                       "Ambulans"),NA,"Alt. care")),
                             as.character(pout))) %>%
+    filter(!is.na(poutref)) %>%
     mutate(poutref = factor(poutref,levels = c("1A", "1B", "2A", "2B", "Alt. txp", "Alt. care")))
   
   return(o)
