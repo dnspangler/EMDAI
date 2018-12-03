@@ -1682,28 +1682,31 @@ Let's begin by using a [learning curve](https://www.dataquest.io/blog/learning-c
   # Update parameters to use error rate
   testparams$eval_metric <- "error"
 
+  # Define what percent of data to use for training
+  trainsplit <- 0.8
+  
   #define full dataset
   dat <- moddata[hospptobs,predcols[[7]]]
-  lab <- moddata[hospptobs,1838]
+  lab <- moddata[hospptobs,which(dimnames(moddata)[[2]] == "hosp_admit")]
 
   # Define Training / Development observations
-  tobs <- seq(1,length(lab)*0.8,by=1)
+  tobs <- seq(1,length(lab)*trainsplit)
   dobs <- seq(1,length(lab),by=1)[-tobs]
 
 learning_curve <- function(fulldat, 
                            fulllab, 
                            testparams, 
                            manbreaks = c(100,1000,10000,20000),
-                           trainobs = tobs,
-                           devobs = dobs){
+                           trainobs, 
+                           devobs){
 
   
   # Set number of observations to include at each threshold
   breaks <- c(manbreaks,length(fulllab[trainobs]))
   
   results <- data.frame(n = integer(0),
-                        trainerr = integer(0),
-                        deverr = integer(0))
+                        train = integer(0),
+                        dev = integer(0))
   
   for(i in 1:length(breaks)){
     samp <- sample(trainobs,breaks[i])
@@ -1719,14 +1722,20 @@ learning_curve <- function(fulldat,
 }
 
 lc <- learning_curve(fulldat = dat,
-                    fulllab = lab,
-                    testparams = testparams)
+                     fulllab = lab,
+                     testparams = testparams,
+                     trainobs = tobs,
+                     devobs = dobs)
 
 lc %>%
   melt(id.vars = "n") %>%
   ggplot(aes(x=n, y=value, color = variable)) +
   geom_line(size = 2) +
-  expand_limits(x = 30000)
+  expand_limits(x = 30000) +
+  labs(x = "Sample size",
+       y = "Error",
+       color = "Dataset",
+       title = "Learning curve for hospital admission model")
 
 ```
 
@@ -1735,6 +1744,7 @@ We see that the error in our models in out-of-samle data generally plateaus at a
 We also need to check that our model is well calibrated - That is to say, that the admission risks predicted by the model lack systematic bias across the range of predicted values. We can do this using the cross validation approach we used earlier, and we'll use the the RMS package calibrate function to do the prior.
 
 ```{r}
+
 xgbadmit_cv <- do.call(xgb.cv,testparams)
 tdf <- data.frame(out = lab,pred = xgbadmit_cv$pred)
 lrm <- lrm(out ~ pred,data = tdf, x=T,y=T)
