@@ -889,6 +889,7 @@ alldata <- left_join(alldata, wordmat, by = "caseid") %>%
 #             rep(2,sum(grepl("v_",names(txtout)))),
 #             rep(3,sum(grepl("hosp_",names(txtout)))))
 # 
+# Looks like I stored some outcome data in a seperate df here... Oops, might fix this to use alldata later...
 # names(outobs) <- names(txtout)[-1]
 # 
 # desctokens <- cleantokens %>%
@@ -1667,6 +1668,123 @@ ggplot(aes(x = prettyname(lab),
 ```
 
 We see that with the exception of 3-day morality, the dispatch data based model outperforms NEWS, with the model containing predictors from the ambulance journal performing better still, outperforming NEWS scores in terms of 3-day mortality as well. Interestingly, while NEWS has a good predictive value for mortality, it performs less well in terms of predicting for instance admission and ICU treatment.
+
+## Model validation
+
+So far, we've limited this investigation to the discriminatory ability of our models. That is to say, we've only looked at the overall ability of our models to predict outcomes of interest. While this is useful in guiding exploratory analysis, once an approach has been selected we need to apply some additional investigative tools to optimize our models and determine that they perform well in terms of calibration and clinical usefulness.
+
+Based on the analysis presented above, we believe that an intervention to improve the ability of nurses to distinguish between patients requiring hospital care and those that may be definitively treated in primary care. This distinction is of particular interest among patients determined not to require an ambulance, as the current decision support system makes no distinction between these outcomes. We believe that hospital admission is the best marker available to us to determine this, and as such, we will here focus our validation efforts on this measure.
+
+Let's begin by using a [learning curve](https://www.dataquest.io/blog/learning-curves-machine-learning/) to understand how our preliminary model for admission lays in terms of the bias/variance trade off. We saw that the models tended to overfit the data based on the cross-validation results shown above, but a learning curve will assist us in diagnosing whether further data collection and a more or less complex might produce better results. For this purpose, we'll split our data into a training dataset and development dataset consisting of the last 20% of collected observations (in this case, the last 3 months of the data we collected in 2017). We then plot how the predictive value of our dataset changes as we add more data to the training set. Note that we'll here move from reporting the mode AUROC, to investigating the error rate of the model (lower is better):
+
+```{r}
+
+  # Update parameters to use error rate
+  testparams$eval_metric <- "error"
+
+  #define full dataset
+  dat <- moddata[hospptobs,predcols[[7]]]
+  lab <- moddata[hospptobs,1838]
+
+  # Define Training / Development observations
+  tobs <- seq(1,length(lab)*0.8,by=1)
+  dobs <- seq(1,length(lab),by=1)[-tobs]
+
+learning_curve <- function(fulldat, 
+                           fulllab, 
+                           testparams, 
+                           manbreaks = c(100,1000,10000,20000),
+                           trainobs = tobs,
+                           devobs = dobs){
+
+  
+  # Set number of observations to include at each threshold
+  breaks <- c(manbreaks,length(fulllab[trainobs]))
+  
+  results <- data.frame(n = integer(0),
+                        trainerr = integer(0),
+                        deverr = integer(0))
+  
+  for(i in 1:length(breaks)){
+    samp <- sample(trainobs,breaks[i])
+    dat <- fulldat[samp,]
+    lab <- fulllab[samp]
+    mod <- do.call(xgboost,testparams)
+    trainerr <- mod$evaluation_log[nrow(mod$evaluation_log),2]
+    devpred <- ifelse(predict(mod, fulldat[devobs,]) >= 0.5,1,0)
+    deverr <- sum(devpred != fulllab[devobs])/length(fulllab[devobs])
+    results[i,] <- cbind(n = breaks[i],trainerr,deverr)
+  }
+  return(results)
+}
+
+lc <- learning_curve(fulldat = dat,
+                    fulllab = lab,
+                    testparams = testparams)
+
+lc %>%
+  melt(id.vars = "n") %>%
+  ggplot(aes(x=n, y=value, color = variable)) +
+  geom_line(size = 2) +
+  expand_limits(x = 30000)
+
+```
+
+We see that the error in our models in out-of-samle data generally plateaus at an error rate of around 0.3 after ~10 000 observations, and that the error is due to bias in the model, rather than high variance. As such, adding additional data to our model is unlikely to improve performance, and that the data could likely support a more complex model.
+
+We also need to check that our model is well calibrated - That is to say, that the admission risks predicted by the model lack systematic bias across the range of predicted values. We can do this using the cross validation approach we used earlier, and we'll use the the RMS package calibrate function to do the prior.
+
+```{r}
+xgbadmit_cv <- do.call(xgb.cv,testparams)
+tdf <- data.frame(out = lab,pred = xgbadmit_cv$pred)
+lrm <- lrm(out ~ pred,data = tdf, x=T,y=T)
+plot(calibrate(lrm,method = "crossvalidation",B=10))
+
+```
+
+We find that based on cross-validation, the model is well calibrated across the full population. However, we're interested in predicting outcomes among a certain sub-group of patients, namely those who are determined not to need an ambulance. Let's have a look at what the calibration looks like when we apply the model trained on the full dataset to this sub-population:
+
+```{r}
+refobs <- which(alldata$pout[hospptobs] == "Referral")
+
+tdf_ref <- data.frame(out = lab[refobs],pred = xgbadmit_cv$pred[refobs])
+lrm <- lrm(out ~ pred[],data = tdf_ref, x=T,y=T)
+plot(calibrate(lrm,method = "crossvalidation",B=10))
+```
+
+We see that the model retains a reasonable degree of calibration within this sub-population, though in the region of high-risk patients where there are very few observations, the model tends to overestimate risks.
+
+Finally, we're interested in assessing whether these models have the ability to provide a clinical benefit to patients who are triaged based on model findings. To do this, we can perform a [decision curve analysis](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC2577036/) to evauate the potential benefit of a predictive model across various risk thresholds.
+
+```{r}
+
+model_admit <- decision_curve(out ~ pred,
+                       data = tdf, 
+                       study.design = "cohort", 
+                       policy = "opt-in",
+                       bootstraps = 50)
+
+plot_decision_curve(model_admit,
+                    curve.names = "model",
+                    standardize = F,
+                    main = "Decision curve - Full population")
+
+model_admit_ref <- decision_curve(out ~ pred,
+                       data = tdf_ref, 
+                       study.design = "cohort", 
+                       policy = "opt-in",
+                       bootstraps = 50)
+
+plot_decision_curve(model_admit_ref,
+                    curve.names = "model",
+                    standardize = F,
+                    main = "Decision curve - Referred patients")
+
+```
+
+We see that in the plots above, the net benefit of applying the model to determine whether a patient will be admitted to the hopsital beings to diverge in terms of net benefit from assuming that all patients will be admitted to the hospital at threshold value corresponding to 1:7 among the full population, and 1:16 among referred patients only. 
+
+Thus the questions becomes a clinical and operational one: How much worse is it to refer a patient who should be admitted to primary care, than to send a patient who doesn't need in-patient care to the hospital? If the answer to this question is "Less than 16 times as bad among referred patients", then this model may be able to deliver a clinical benefit.
 
 # 4) Discussion
 
